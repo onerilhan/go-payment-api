@@ -114,3 +114,38 @@ func (h *UserHandler) GetProfile(w http.ResponseWriter, r *http.Request) {
 
 	log.Info().Int("user_id", claims.UserID).Msg("Profil bilgileri getirildi")
 }
+
+// Refresh JWT token yenileme endpoint'i
+func (h *UserHandler) Refresh(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "Sadece POST metoduna izin verilir", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Geçersiz JSON formatı", http.StatusBadRequest)
+		return
+	}
+
+	newToken, expiresIn, err := auth.RefreshToken(req.Token)
+	if err != nil {
+		log.Error().Err(err).Msg("Token refresh başarısız")
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	response := models.RefreshResponse{
+		Success:   true,
+		Token:     newToken,
+		ExpiresIn: expiresIn,
+		Message:   "Token başarıyla yenilendi",
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
+}

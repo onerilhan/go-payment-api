@@ -16,14 +16,16 @@ import (
 // TransactionHandler transaction HTTP isteklerini yönetir
 type TransactionHandler struct {
 	transactionService *services.TransactionService
-	transactionQueue   *services.TransactionQueue // ← YENİ: Queue eklendi
+	transactionQueue   *services.TransactionQueue
+	balanceService     *services.BalanceService // ← YENİ: Queue eklendi
 }
 
 // NewTransactionHandler yeni handler oluşturur
-func NewTransactionHandler(transactionService *services.TransactionService, transactionQueue *services.TransactionQueue) *TransactionHandler {
+func NewTransactionHandler(transactionService *services.TransactionService, transactionQueue *services.TransactionQueue, balanceService *services.BalanceService) *TransactionHandler {
 	return &TransactionHandler{
 		transactionService: transactionService,
 		transactionQueue:   transactionQueue, // ← YENİ: Queue eklendi
+		balanceService:     balanceService,
 	}
 }
 
@@ -142,4 +144,69 @@ func (h *TransactionHandler) GetHistory(w http.ResponseWriter, r *http.Request) 
 		Int("limit", limit).
 		Int("offset", offset).
 		Msg("Transaction geçmişi getirildi")
+}
+
+// Credit hesaba para yatırma endpoint'i
+func (h *TransactionHandler) Credit(w http.ResponseWriter, r *http.Request) {
+	// Sadece POST metoduna izin ver
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "Sadece POST metoduna izin verilir", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Context'ten user bilgilerini al (JWT middleware tarafından eklenir)
+	claims, ok := r.Context().Value(middleware.UserContextKey).(*auth.Claims)
+	if !ok {
+		http.Error(w, "Yetkilendirme hatası", http.StatusUnauthorized)
+		return
+	}
+
+	// JSON'u parse et
+	var req models.CreditRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Geçersiz JSON formatı", http.StatusBadRequest)
+		return
+	}
+
+	// Credit işlemini yap
+	transaction, err := h.transactionService.Credit(claims.UserID, &req)
+	if err != nil {
+		log.Error().Err(err).Int("user_id", claims.UserID).Msg("Credit işlemi başarısız")
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Güncel bakiyeyi al
+	newBalance, err := h.balanceService.GetBalance(claims.UserID)
+	if err != nil {
+		log.Error().Err(err).Int("user_id", claims.UserID).Msg("Bakiye alınamadı")
+		// Transaction başarılı ama bakiye alınamadı - yine de devam et
+		newBalance = &models.Balance{Amount: 0}
+	}
+
+	// Güvenli response oluştur (hassas bilgileri filtrele)
+	response := models.CreditResponse{
+		Success: true,
+		Transaction: &models.TransactionSummary{
+			ID:          transaction.ID,
+			Amount:      transaction.Amount,
+			Type:        transaction.Type,
+			Status:      transaction.Status,
+			Description: transaction.Description,
+			CreatedAt:   transaction.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		},
+		NewBalance: newBalance.Amount,
+		Message:    "Para yatırma işlemi başarılı",
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(response)
+
+	log.Info().
+		Int("user_id", claims.UserID).
+		Float64("amount", req.Amount).
+		Float64("new_balance", newBalance.Amount).
+		Msg("Credit işlemi tamamlandı")
 }

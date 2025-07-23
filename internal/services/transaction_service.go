@@ -118,3 +118,48 @@ func (s *TransactionService) GetUserTransactions(userID int, limit, offset int) 
 
 	return transactions, nil
 }
+
+// Credit kullanıcının hesabına para yatırır
+func (s *TransactionService) Credit(userID int, req *models.CreditRequest) (*models.Transaction, error) {
+	// Amount validation
+	if err := s.ValidateAmount(req.Amount); err != nil {
+		return nil, err
+	}
+
+	// Default description
+	description := req.Description
+	if description == "" {
+		description = "Hesaba para yatırma"
+	}
+
+	// Kullanıcının mevcut bakiyesini al
+	balance, err := s.balanceService.GetBalance(userID)
+	if err != nil {
+		return nil, fmt.Errorf("bakiye alınamadı: %w", err)
+	}
+
+	// Transaction oluştur
+	transaction := &models.Transaction{
+		ToUserID:    &userID,
+		FromUserID:  nil, // Sistem kredisi
+		Amount:      req.Amount,
+		Type:        "credit",
+		Status:      "completed",
+		Description: description,
+	}
+
+	// Transaction'ı kaydet
+	createdTx, err := s.transactionRepo.Create(transaction)
+	if err != nil {
+		return nil, fmt.Errorf("transaction oluşturulamadı: %w", err)
+	}
+
+	// Bakiyeyi artır (TODO: Database transaction ile rollback ekle)
+	newAmount := balance.Amount + req.Amount
+	if err := s.balanceService.UpdateBalance(userID, newAmount); err != nil {
+		// TODO: createdTx'i rollback et
+		return nil, fmt.Errorf("bakiye güncellenemedi: %w", err)
+	}
+
+	return createdTx, nil
+}

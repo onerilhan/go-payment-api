@@ -31,3 +31,11 @@ type LoginResponse struct {
 	User  *User  `json:"user"`
 	Token string `json:"token"`
 }
+
+// RefreshResponse token refresh yanıtı
+type RefreshResponse struct {
+	Success   bool   `json:"success"`
+	Token     string `json:"token"`
+	ExpiresIn int64  `json:"expires_in"`
+	Message   string `json:"message"`
+}

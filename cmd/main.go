@@ -58,13 +58,15 @@ func main() {
 
 	userHandler := handlers.NewUserHandler(userService)
 	balanceHandler := handlers.NewBalanceHandler(balanceService)
-	transactionHandler := handlers.NewTransactionHandler(transactionService, transactionQueue) // ← GÜNCEL
+	transactionHandler := handlers.NewTransactionHandler(transactionService, transactionQueue, balanceService) // ← GÜNCEL
 
 	// HTTP routes
 	http.HandleFunc("/api/v1/auth/register", userHandler.Register)
 	http.HandleFunc("/api/v1/auth/login", userHandler.Login)
+	http.HandleFunc("/api/v1/auth/refresh", userHandler.Refresh)
 	http.HandleFunc("/api/v1/users/profile", middleware.AuthMiddleware(userHandler.GetProfile))
 	http.HandleFunc("/api/v1/transactions/transfer", middleware.AuthMiddleware(transactionHandler.Transfer))
+	http.HandleFunc("/api/v1/transactions/credit", middleware.AuthMiddleware(transactionHandler.Credit))
 	http.HandleFunc("/api/v1/transactions/history", middleware.AuthMiddleware(transactionHandler.GetHistory))
 	http.HandleFunc("/api/v1/balances/current", middleware.AuthMiddleware(balanceHandler.GetCurrentBalance))
 
