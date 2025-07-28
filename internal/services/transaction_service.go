@@ -53,16 +53,24 @@ func (s *TransactionService) ValidateAmount(amount float64) error {
 	return nil
 }
 
-// Transfer kullanıcılar arası para transferi yapar (rollback mechanism ile)
+// Transfer kullanıcılar arası para transferi yapar - STATE MANAGEMENT EKLENDİ
 func (s *TransactionService) Transfer(fromUserID int, req *models.TransferRequest) (*models.Transaction, error) {
-	// Amount validation
-	if err := s.ValidateAmount(req.Amount); err != nil {
+	//  Request validation
+	if err := req.Validate(); err != nil {
 		return nil, err
 	}
 
 	// Aynı kullanıcıya transfer kontrolü
 	if fromUserID == req.ToUserID {
 		return nil, fmt.Errorf("kendinize para gönderemezsiniz")
+	}
+
+	//  Factory method ile transaction oluştur
+	transaction := models.NewTransferTransaction(fromUserID, req.ToUserID, req.Amount, req.Description)
+
+	//  Transaction validation
+	if err := transaction.Validate(); err != nil {
+		return nil, fmt.Errorf("transaction validation hatası: %w", err)
 	}
 
 	var result *models.Transaction
@@ -78,14 +86,17 @@ func (s *TransactionService) Transfer(fromUserID int, req *models.TransferReques
 		`, fromUserID).Scan(&fromBalance)
 
 		if err == sql.ErrNoRows {
+			transaction.SetStatus(models.StatusFailed)
 			return fmt.Errorf("gönderen kullanıcının bakiyesi bulunamadı")
 		}
 		if err != nil {
+			transaction.SetStatus(models.StatusFailed)
 			return fmt.Errorf("gönderen bakiye sorgusu hatası: %w", err)
 		}
 
 		// 2. Yeterli bakiye kontrolü
 		if fromBalance < req.Amount {
+			transaction.SetStatus(models.StatusFailed)
 			return fmt.Errorf("yetersiz bakiye. Mevcut bakiye: %.2f TL", fromBalance)
 		}
 
@@ -101,23 +112,26 @@ func (s *TransactionService) Transfer(fromUserID int, req *models.TransferReques
 				INSERT INTO balances (user_id, amount) VALUES ($1, 0.00)
 			`, req.ToUserID)
 			if err != nil {
+				transaction.SetStatus(models.StatusFailed)
 				return fmt.Errorf("alan kullanıcı bakiyesi oluşturulamadı: %w", err)
 			}
 			toBalance = 0.00
 		} else if err != nil {
+			transaction.SetStatus(models.StatusFailed)
 			return fmt.Errorf("alan kullanıcı bakiye sorgusu hatası: %w", err)
 		}
 
-		// 4. Transaction kaydını oluştur
+		// 4. Transaction kaydını oluştur (PENDING status ile)
 		var transactionID int
 		var createdAt sql.NullTime
 		err = txRepo.QueryRow(`
 			INSERT INTO transactions (from_user_id, to_user_id, amount, type, status, description) 
-			VALUES ($1, $2, $3, 'transfer', 'completed', $4)
+			VALUES ($1, $2, $3, $4, $5, $6)
 			RETURNING id, created_at
-		`, fromUserID, req.ToUserID, req.Amount, req.Description).Scan(&transactionID, &createdAt)
+		`, fromUserID, req.ToUserID, req.Amount, transaction.Type, transaction.Status, req.Description).Scan(&transactionID, &createdAt)
 
 		if err != nil {
+			transaction.SetStatus(models.StatusFailed)
 			return fmt.Errorf("transaction kaydı oluşturulamadı: %w", err)
 		}
 
@@ -130,6 +144,7 @@ func (s *TransactionService) Transfer(fromUserID int, req *models.TransferReques
 			UPDATE balances SET amount = $1 WHERE user_id = $2
 		`, newFromBalance, fromUserID)
 		if err != nil {
+			transaction.SetStatus(models.StatusFailed)
 			return fmt.Errorf("gönderen bakiye güncellenemedi: %w", err)
 		}
 
@@ -138,20 +153,27 @@ func (s *TransactionService) Transfer(fromUserID int, req *models.TransferReques
 			UPDATE balances SET amount = $1 WHERE user_id = $2
 		`, newToBalance, req.ToUserID)
 		if err != nil {
+			transaction.SetStatus(models.StatusFailed)
 			return fmt.Errorf("alan bakiye güncellenemedi: %w", err)
 		}
 
-		// 6. Result struct'ını oluştur
-		result = &models.Transaction{
-			ID:          transactionID,
-			FromUserID:  &fromUserID,
-			ToUserID:    &req.ToUserID,
-			Amount:      req.Amount,
-			Type:        "transfer",
-			Status:      "completed",
-			Description: req.Description,
-			CreatedAt:   createdAt.Time,
+		//  Transaction'ı completed olarak işaretle
+		if err := transaction.SetStatus(models.StatusCompleted); err != nil {
+			return fmt.Errorf("transaction status güncellenemedi: %w", err)
 		}
+
+		// Status'u database'de güncelle
+		_, err = txRepo.Exec(`
+			UPDATE transactions SET status = $1 WHERE id = $2
+		`, transaction.Status, transactionID)
+		if err != nil {
+			return fmt.Errorf("transaction status database'de güncellenemedi: %w", err)
+		}
+
+		// 6. Result struct'ını oluştur
+		transaction.ID = transactionID
+		transaction.CreatedAt = createdAt.Time
+		result = transaction
 
 		return nil // SUCCESS - transaction commit edilecek
 	})
@@ -173,10 +195,10 @@ func (s *TransactionService) GetUserTransactions(userID int, limit, offset int) 
 	return transactions, nil
 }
 
-// Credit kullanıcının hesabına para yatırır (rollback mechanism ile)
+// Credit kullanıcının hesabına para yatırır - STATE MANAGEMENT EKLENDİ
 func (s *TransactionService) Credit(userID int, req *models.CreditRequest) (*models.Transaction, error) {
-	// Amount validation
-	if err := s.ValidateAmount(req.Amount); err != nil {
+	//  Request validation
+	if err := req.Validate(); err != nil {
 		return nil, err
 	}
 
@@ -184,6 +206,14 @@ func (s *TransactionService) Credit(userID int, req *models.CreditRequest) (*mod
 	description := req.Description
 	if description == "" {
 		description = "Hesaba para yatırma"
+	}
+
+	//  Factory method ile transaction oluştur
+	transaction := models.NewCreditTransaction(userID, req.Amount, description)
+
+	//  Transaction validation
+	if err := transaction.Validate(); err != nil {
+		return nil, fmt.Errorf("transaction validation hatası: %w", err)
 	}
 
 	var result *models.Transaction
@@ -204,23 +234,29 @@ func (s *TransactionService) Credit(userID int, req *models.CreditRequest) (*mod
 				INSERT INTO balances (user_id, amount) VALUES ($1, 0.00)
 			`, userID)
 			if err != nil {
+				//  Transaction status güncelle
+				transaction.SetStatus(models.StatusFailed)
 				return fmt.Errorf("bakiye oluşturulamadı: %w", err)
 			}
 			currentBalance = 0.00
 		} else if err != nil {
+			//  Transaction status güncelle
+			transaction.SetStatus(models.StatusFailed)
 			return fmt.Errorf("bakiye sorgusu hatası: %w", err)
 		}
 
-		// 2. Transaction kaydını oluştur
+		// 2. Transaction kaydını oluştur (PENDING status ile)
 		var transactionID int
 		var createdAt sql.NullTime
 		err = txRepo.QueryRow(`
 			INSERT INTO transactions (to_user_id, from_user_id, amount, type, status, description) 
-			VALUES ($1, NULL, $2, 'credit', 'completed', $3)
+			VALUES ($1, NULL, $2, $3, $4, $5)
 			RETURNING id, created_at
-		`, userID, req.Amount, description).Scan(&transactionID, &createdAt)
+		`, userID, req.Amount, transaction.Type, transaction.Status, description).Scan(&transactionID, &createdAt)
 
 		if err != nil {
+			//  Transaction status güncelle
+			transaction.SetStatus(models.StatusFailed)
 			return fmt.Errorf("transaction kaydı oluşturulamadı: %w", err)
 		}
 
@@ -230,20 +266,28 @@ func (s *TransactionService) Credit(userID int, req *models.CreditRequest) (*mod
 			UPDATE balances SET amount = $1 WHERE user_id = $2
 		`, newBalance, userID)
 		if err != nil {
+			//  Transaction status güncelle
+			transaction.SetStatus(models.StatusFailed)
 			return fmt.Errorf("bakiye güncellenemedi: %w", err)
 		}
 
-		// 4. Result struct'ını oluştur
-		result = &models.Transaction{
-			ID:          transactionID,
-			ToUserID:    &userID,
-			FromUserID:  nil,
-			Amount:      req.Amount,
-			Type:        "credit",
-			Status:      "completed",
-			Description: description,
-			CreatedAt:   createdAt.Time,
+		//  Transaction'ı completed olarak işaretle
+		if err := transaction.SetStatus(models.StatusCompleted); err != nil {
+			return fmt.Errorf("transaction status güncellenemedi: %w", err)
 		}
+
+		// Status'u database'de güncelle
+		_, err = txRepo.Exec(`
+			UPDATE transactions SET status = $1 WHERE id = $2
+		`, transaction.Status, transactionID)
+		if err != nil {
+			return fmt.Errorf("transaction status database'de güncellenemedi: %w", err)
+		}
+
+		// 4. Result struct'ını oluştur
+		transaction.ID = transactionID
+		transaction.CreatedAt = createdAt.Time
+		result = transaction
 
 		return nil // SUCCESS - transaction commit edilecek
 	})
@@ -255,10 +299,10 @@ func (s *TransactionService) Credit(userID int, req *models.CreditRequest) (*mod
 	return result, nil
 }
 
-// Debit kullanıcının hesabından para çeker (rollback mechanism ile)
+// Debit kullanıcının hesabından para çeker - STATE MANAGEMENT EKLENDİ
 func (s *TransactionService) Debit(userID int, req *models.DebitRequest) (*models.Transaction, error) {
-	// Amount validation
-	if err := s.ValidateAmount(req.Amount); err != nil {
+	// Request validation
+	if err := req.Validate(); err != nil {
 		return nil, err
 	}
 
@@ -266,6 +310,14 @@ func (s *TransactionService) Debit(userID int, req *models.DebitRequest) (*model
 	description := req.Description
 	if description == "" {
 		description = "Hesaptan para çekme"
+	}
+
+	//  Factory method ile transaction oluştur
+	transaction := models.NewDebitTransaction(userID, req.Amount, description)
+
+	// Transaction validation
+	if err := transaction.Validate(); err != nil {
+		return nil, fmt.Errorf("transaction validation hatası: %w", err)
 	}
 
 	var result *models.Transaction
@@ -281,27 +333,31 @@ func (s *TransactionService) Debit(userID int, req *models.DebitRequest) (*model
 		`, userID).Scan(&currentBalance)
 
 		if err == sql.ErrNoRows {
+			transaction.SetStatus(models.StatusFailed)
 			return fmt.Errorf("kullanıcının bakiyesi bulunamadı")
 		}
 		if err != nil {
+			transaction.SetStatus(models.StatusFailed)
 			return fmt.Errorf("bakiye sorgusu hatası: %w", err)
 		}
 
 		// 2. Yeterli bakiye kontrolü
 		if currentBalance < req.Amount {
+			transaction.SetStatus(models.StatusFailed)
 			return fmt.Errorf("yetersiz bakiye. Mevcut bakiye: %.2f TL", currentBalance)
 		}
 
-		// 3. Transaction kaydını oluştur
+		// 3. Transaction kaydını oluştur (PENDING status ile)
 		var transactionID int
 		var createdAt sql.NullTime
 		err = txRepo.QueryRow(`
 			INSERT INTO transactions (from_user_id, to_user_id, amount, type, status, description) 
-			VALUES ($1, NULL, $2, 'debit', 'completed', $3)
+			VALUES ($1, NULL, $2, $3, $4, $5)
 			RETURNING id, created_at
-		`, userID, req.Amount, description).Scan(&transactionID, &createdAt)
+		`, userID, req.Amount, transaction.Type, transaction.Status, description).Scan(&transactionID, &createdAt)
 
 		if err != nil {
+			transaction.SetStatus(models.StatusFailed)
 			return fmt.Errorf("transaction kaydı oluşturulamadı: %w", err)
 		}
 
@@ -311,20 +367,27 @@ func (s *TransactionService) Debit(userID int, req *models.DebitRequest) (*model
 			UPDATE balances SET amount = $1 WHERE user_id = $2
 		`, newBalance, userID)
 		if err != nil {
+			transaction.SetStatus(models.StatusFailed)
 			return fmt.Errorf("bakiye güncellenemedi: %w", err)
 		}
 
-		// 5. Result struct'ını oluştur
-		result = &models.Transaction{
-			ID:          transactionID,
-			FromUserID:  &userID,
-			ToUserID:    nil,
-			Amount:      req.Amount,
-			Type:        "debit",
-			Status:      "completed",
-			Description: description,
-			CreatedAt:   createdAt.Time,
+		//  Transaction'ı completed olarak işaretle
+		if err := transaction.SetStatus(models.StatusCompleted); err != nil {
+			return fmt.Errorf("transaction status güncellenemedi: %w", err)
 		}
+
+		// Status'u database'de güncelle
+		_, err = txRepo.Exec(`
+			UPDATE transactions SET status = $1 WHERE id = $2
+		`, transaction.Status, transactionID)
+		if err != nil {
+			return fmt.Errorf("transaction status database'de güncellenemedi: %w", err)
+		}
+
+		// 5. Result struct'ını oluştur
+		transaction.ID = transactionID
+		transaction.CreatedAt = createdAt.Time
+		result = transaction
 
 		return nil // SUCCESS - transaction commit edilecek
 	})

@@ -44,7 +44,14 @@ func main() {
 	if err != nil {
 		log.Fatal().Err(err).Msg("❌ Veritabanı bağlantısı başarısız")
 	}
-	defer database.Close()
+	defer func() {
+		log.Info().Msg("🗄️  Database bağlantısı kapatılıyor...")
+		if err := database.Close(); err != nil {
+			log.Error().Err(err).Msg("❌ Database kapatma hatası")
+		} else {
+			log.Info().Msg("✅ Database başarıyla kapatıldı")
+		}
+	}()
 
 	// Repository, Service, Handler katmanları
 	userRepo := repository.NewUserRepository(database)
@@ -81,6 +88,7 @@ func main() {
 	signal.Notify(shutdown, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
 
 	// Server'ı goroutine'de başlat
+	serverErr := make(chan error, 1)
 	go func() {
 		log.Info().
 			Str("port", cfg.Port).
@@ -90,41 +98,95 @@ func main() {
 			Int("idle_timeout", 60).
 			Msg("🌐 HTTP Server (Gorilla Mux) başlatıldı")
 
+		// Server'ı başlat
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatal().Err(err).Msg("❌ Server başlatma hatası")
+			serverErr <- err
 		}
 	}()
 
-	// Shutdown signal'ını bekle
-	<-shutdown
-	log.Info().Msg("🛑 Shutdown signal alındı, server kapatılıyor...")
+	// Shutdown signal'ını veya server error'ını bekle
+	select {
+	case err := <-serverErr:
+		log.Fatal().Err(err).Msg("❌ Server başlatma hatası")
+	case sig := <-shutdown:
+		log.Info().
+			Str("signal", sig.String()).
+			Msg("🛑 Shutdown signal alındı, graceful shutdown başlıyor...")
 
-	// Graceful shutdown sequence
+		// Graceful shutdown sequence başlat
+		performGracefulShutdown(server, transactionQueue)
+	}
+}
+
+// performGracefulShutdown graceful shutdown işlemlerini sırasıyla yapar
+func performGracefulShutdown(server *http.Server, transactionQueue *services.TransactionQueue) {
+	// Shutdown timeout context (maksimum 30 saniye bekle)
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
 
-	// 1. HTTP Server'ı kapat (aktif bağlantıları bekle)
-	log.Info().Msg("📡 HTTP Server kapatılıyor...")
-	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Error().Err(err).Msg("❌ HTTP Server kapatma hatası")
-	} else {
-		log.Info().Msg("✅ HTTP Server başarıyla kapatıldı")
+	log.Info().Msg("📋 Graceful shutdown sırası:")
+	log.Info().Msg("   1️⃣  HTTP Server'ı durdur (yeni request kabul etme)")
+	log.Info().Msg("   2️⃣  Aktif HTTP request'leri bitir")
+	log.Info().Msg("   3️⃣  Transaction Queue'yu durdur")
+	log.Info().Msg("   4️⃣  Database bağlantılarını kapat")
+
+	// 1. HTTP Server'ı graceful shutdown yap
+	log.Info().Msg("📡 HTTP Server graceful shutdown başlatılıyor...")
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			log.Error().Err(err).Msg("❌ HTTP Server graceful shutdown hatası")
+		} else {
+			log.Info().Msg("✅ HTTP Server graceful shutdown tamamlandı")
+		}
+	}()
+
+	// Shutdown timeout kontrolü
+	select {
+	case <-done:
+		// Shutdown başarılı
+	case <-shutdownCtx.Done():
+		log.Warn().Msg("⚠️  HTTP Server shutdown timeout! Zorla kapatılıyor...")
+		// Force close context
+		forceCtx, forceCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer forceCancel()
+		if err := server.Shutdown(forceCtx); err != nil {
+			log.Error().Err(err).Msg("❌ HTTP Server force shutdown hatası")
+		}
 	}
 
-	// 2. Transaction Queue'yu kapat
-	log.Info().Msg("🔄 Transaction Queue kapatılıyor...")
-	transactionQueue.Stop()
-	log.Info().Msg("✅ Transaction Queue başarıyla kapatıldı")
+	// 2. Transaction Queue'yu durdur
+	log.Info().Msg("🔄 Transaction Queue graceful shutdown başlatılıyor...")
+	queueDone := make(chan struct{})
+	go func() {
+		defer close(queueDone)
+		transactionQueue.Stop()
+		log.Info().Msg("✅ Transaction Queue graceful shutdown tamamlandı")
+	}()
 
-	// 3. Database bağlantısını kapat (defer ile zaten kapatılacak)
-	log.Info().Msg("🗄️  Database bağlantısı kapatılıyor...")
+	// Queue shutdown timeout kontrolü (10 saniye)
+	queueTimeout := time.NewTimer(10 * time.Second)
+	select {
+	case <-queueDone:
+		queueTimeout.Stop()
+	case <-queueTimeout.C:
+		log.Warn().Msg("⚠️  Transaction Queue shutdown timeout!")
+	}
 
-	log.Info().Msg("👋 Ödeme API başarıyla kapatıldı")
+	// 3. Final log
+	log.Info().Msg("👋 Ödeme API graceful shutdown tamamlandı")
 }
 
 // setupRouter Gorilla Mux router'ını ayarlar
 func setupRouter(userHandler *handlers.UserHandler, balanceHandler *handlers.BalanceHandler, transactionHandler *handlers.TransactionHandler) *mux.Router {
 	router := mux.NewRouter()
+	router.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"healthy"}`))
+	}).Methods("GET")
 
 	// API v1 subrouter
 	api := router.PathPrefix("/api/v1").Subrouter()

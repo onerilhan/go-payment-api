@@ -24,7 +24,7 @@ func NewUserHandler(userService *services.UserService) *UserHandler {
 	return &UserHandler{userService: userService}
 }
 
-// Register kullanıcı kayıt endpoint'i
+// Register kullanıcı kayıt endpoint'i - VALİDASYON EKLENDİ
 func (h *UserHandler) Register(w http.ResponseWriter, r *http.Request) {
 	// Sadece POST metoduna izin ver
 	if r.Method != http.MethodPost {
@@ -36,6 +36,17 @@ func (h *UserHandler) Register(w http.ResponseWriter, r *http.Request) {
 	var req models.CreateUserRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Geçersiz JSON formatı", http.StatusBadRequest)
+		return
+	}
+
+	//  YENİ VALİDASYON KONTROLÜ
+	if err := req.Validate(); err != nil {
+		log.Warn().
+			Err(err).
+			Str("email", req.Email).
+			Str("name", req.Name).
+			Msg("❌ Validation hatası")
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -52,10 +63,13 @@ func (h *UserHandler) Register(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(user)
 
-	log.Info().Str("email", user.Email).Msg("Yeni kullanıcı kaydedildi")
+	log.Info().
+		Str("email", user.Email).
+		Str("role", user.Role).
+		Msg(" Yeni kullanıcı kaydedildi")
 }
 
-// Login kullanıcı giriş endpoint'i
+// Login kullanıcı giriş endpoint'i - VALİDASYON EKLENDİ
 func (h *UserHandler) Login(w http.ResponseWriter, r *http.Request) {
 	// Sadece POST metoduna izin ver
 	if r.Method != http.MethodPost {
@@ -67,6 +81,16 @@ func (h *UserHandler) Login(w http.ResponseWriter, r *http.Request) {
 	var req models.LoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Geçersiz JSON formatı", http.StatusBadRequest)
+		return
+	}
+
+	//  YENİ VALİDASYON KONTROLÜ
+	if err := req.Validate(); err != nil {
+		log.Warn().
+			Err(err).
+			Str("email", req.Email).
+			Msg("❌ Login validation hatası")
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -83,7 +107,10 @@ func (h *UserHandler) Login(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(user)
 
-	log.Info().Str("email", user.User.Email).Msg("Kullanıcı giriş yaptı")
+	log.Info().
+		Str("email", user.User.Email).
+		Str("role", user.User.Role).
+		Msg(" Kullanıcı giriş yaptı")
 }
 
 // GetProfile kullanıcının kendi profilini döner (protected endpoint)
@@ -269,7 +296,7 @@ func (h *UserHandler) GetUserByID(w http.ResponseWriter, r *http.Request) {
 	log.Info().Int("user_id", userID).Msg("Kullanıcı detayı getirildi")
 }
 
-// UpdateUser kullanıcı güncelleme endpoint'i (Gorilla Mux version)
+// UpdateUser kullanıcı güncelleme endpoint'i - VALİDASYON EKLENDİ
 func (h *UserHandler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 	// Context'ten user bilgilerini al
 	claims, ok := r.Context().Value(middleware.UserContextKey).(*auth.Claims)
@@ -293,20 +320,30 @@ func (h *UserHandler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// JSON'u parse et
+	var req models.UpdateUserRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Geçersiz JSON formatı", http.StatusBadRequest)
+		return
+	}
+
+	//  YENİ VALİDASYON KONTROLÜ
+	if err := req.Validate(); err != nil {
+		log.Warn().
+			Err(err).
+			Int("user_id", targetUserID).
+			Msg(" Update validation hatası")
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	// Authorization: Sadece kendi hesabını güncelleyebilir
 	if claims.UserID != targetUserID {
 		log.Warn().
 			Int("requester_id", claims.UserID).
 			Int("target_id", targetUserID).
-			Msg("Yetkisiz kullanıcı güncelleme denemesi")
+			Msg(" Yetkisiz kullanıcı güncelleme denemesi")
 		http.Error(w, "Sadece kendi hesabınızı güncelleyebilirsiniz", http.StatusForbidden)
-		return
-	}
-
-	// JSON'u parse et
-	var req models.UpdateUserRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Geçersiz JSON formatı", http.StatusBadRequest)
 		return
 	}
 
@@ -332,7 +369,7 @@ func (h *UserHandler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 	log.Info().
 		Int("user_id", targetUserID).
 		Str("updated_by", claims.Email).
-		Msg("Kullanıcı güncellendi")
+		Msg(" Kullanıcı güncellendi")
 }
 
 // DeleteUser kullanıcı silme endpoint'i (Gorilla Mux version)
@@ -364,7 +401,7 @@ func (h *UserHandler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 		log.Warn().
 			Int("requester_id", claims.UserID).
 			Int("target_id", targetUserID).
-			Msg("Yetkisiz kullanıcı silme denemesi")
+			Msg(" Yetkisiz kullanıcı silme denemesi")
 		http.Error(w, "Sadece kendi hesabınızı silebilirsiniz", http.StatusForbidden)
 		return
 	}
@@ -390,5 +427,5 @@ func (h *UserHandler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 	log.Info().
 		Int("user_id", targetUserID).
 		Str("deleted_by", claims.Email).
-		Msg("Kullanıcı silindi (soft delete)")
+		Msg(" Kullanıcı silindi (soft delete)")
 }
