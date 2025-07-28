@@ -83,3 +83,57 @@ func (s *UserService) GetUserByID(userID int) (*models.User, error) {
 	}
 	return user, nil
 }
+
+// UpdateUser kullanıcı bilgilerini günceller
+func (s *UserService) UpdateUser(userID int, req *models.UpdateUserRequest) (*models.User, error) {
+	// En az bir field gönderilmiş mi?
+	if req.Name == nil && req.Email == nil && req.Password == nil {
+		return nil, fmt.Errorf("güncellenecek en az bir alan belirtilmeli")
+	}
+
+	// Email değiştiriliyorsa çakışma kontrolü
+	if req.Email != nil {
+		existingUser, _ := s.userRepo.GetByEmail(*req.Email)
+		if existingUser != nil && existingUser.ID != userID {
+			return nil, fmt.Errorf("bu email zaten başka bir kullanıcı tarafından kullanılıyor")
+		}
+	}
+
+	// Repository'den güncelle
+	updatedUser, err := s.userRepo.Update(userID, req)
+	if err != nil {
+		return nil, fmt.Errorf("kullanıcı güncellenemedi: %w", err)
+	}
+
+	return updatedUser, nil
+}
+
+// DeleteUser kullanıcıyı siler (soft delete)
+func (s *UserService) DeleteUser(userID int) error {
+	// Repository'den kullanıcıyı sil
+	err := s.userRepo.Delete(userID)
+	if err != nil {
+		return fmt.Errorf("kullanıcı silinemedi: %w", err)
+	}
+
+	return nil
+}
+
+// GetAllUsers tüm kullanıcıları listeler (pagination ile)
+func (s *UserService) GetAllUsers(limit, offset int) ([]*models.User, int, error) {
+	// Pagination validation
+	if limit <= 0 || limit > 100 {
+		limit = 10 // default limit
+	}
+	if offset < 0 {
+		offset = 0 // default offset
+	}
+
+	// Repository'den kullanıcıları al
+	users, totalCount, err := s.userRepo.GetAll(limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("kullanıcı listesi alınamadı: %w", err)
+	}
+
+	return users, totalCount, nil
+}

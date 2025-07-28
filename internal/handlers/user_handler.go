@@ -3,6 +3,8 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/rs/zerolog/log"
 
@@ -148,4 +150,269 @@ func (h *UserHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(response)
+}
+
+// GetAllUsers tüm kullanıcıları listeler (protected endpoint)
+func (h *UserHandler) GetAllUsers(w http.ResponseWriter, r *http.Request) {
+	// Sadece GET metoduna izin ver
+	if r.Method != http.MethodGet {
+		http.Error(w, "Sadece GET metoduna izin verilir", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Context'ten user bilgilerini al (authentication kontrolü)
+	_, ok := r.Context().Value(middleware.UserContextKey).(*auth.Claims)
+	if !ok {
+		http.Error(w, "Yetkilendirme hatası", http.StatusUnauthorized)
+		return
+	}
+
+	// Query parameters (pagination)
+	limitStr := r.URL.Query().Get("limit")
+	offsetStr := r.URL.Query().Get("offset")
+
+	// Default değerler
+	limit := 10
+	offset := 0
+
+	// Limit parse et
+	if limitStr != "" {
+		if parsedLimit, err := strconv.Atoi(limitStr); err == nil && parsedLimit > 0 && parsedLimit <= 100 {
+			limit = parsedLimit
+		}
+	}
+
+	// Offset parse et
+	if offsetStr != "" {
+		if parsedOffset, err := strconv.Atoi(offsetStr); err == nil && parsedOffset >= 0 {
+			offset = parsedOffset
+		}
+	}
+
+	// Kullanıcı listesini getir
+	users, totalCount, err := h.userService.GetAllUsers(limit, offset)
+	if err != nil {
+		log.Error().Err(err).Msg("Kullanıcı listesi getirilemedi")
+		http.Error(w, "Kullanıcı listesi alınamadı", http.StatusInternalServerError)
+		return
+	}
+
+	// Standardized success response
+	response := map[string]interface{}{
+		"success": true,
+		"data": map[string]interface{}{
+			"users":       users,
+			"total_count": totalCount,
+			"limit":       limit,
+			"offset":      offset,
+			"count":       len(users),
+		},
+		"message": "Kullanıcı listesi başarıyla getirildi",
+	}
+
+	// Başarılı yanıt
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
+
+	log.Info().
+		Int("total_count", totalCount).
+		Int("returned_count", len(users)).
+		Int("limit", limit).
+		Int("offset", offset).
+		Msg("Kullanıcı listesi getirildi")
+}
+
+// GetUserByID ID ile tek kullanıcı getirme endpoint'i
+func (h *UserHandler) GetUserByID(w http.ResponseWriter, r *http.Request) {
+	// Sadece GET metoduna izin ver
+	if r.Method != http.MethodGet {
+		http.Error(w, "Sadece GET metoduna izin verilir", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Context'ten user bilgilerini al (authentication kontrolü)
+	_, ok := r.Context().Value(middleware.UserContextKey).(*auth.Claims)
+	if !ok {
+		http.Error(w, "Yetkilendirme hatası", http.StatusUnauthorized)
+		return
+	}
+
+	// URL'den user ID'yi al
+	// URL format: /api/v1/users/{id}
+	path := r.URL.Path
+	parts := strings.Split(path, "/")
+	if len(parts) < 5 {
+		http.Error(w, "Geçersiz URL formatı", http.StatusBadRequest)
+		return
+	}
+
+	// ID'yi parse et
+	idStr := parts[4] // /api/v1/users/{id}
+	userID, err := strconv.Atoi(idStr)
+	if err != nil {
+		http.Error(w, "Geçersiz kullanıcı ID", http.StatusBadRequest)
+		return
+	}
+
+	// Kullanıcıyı getir
+	user, err := h.userService.GetUserByID(userID)
+	if err != nil {
+		log.Error().Err(err).Int("user_id", userID).Msg("Kullanıcı bulunamadı")
+		http.Error(w, "Kullanıcı bulunamadı", http.StatusNotFound)
+		return
+	}
+
+	// Başarılı yanıt
+	response := map[string]interface{}{
+		"success": true,
+		"data":    user,
+		"message": "Kullanıcı başarıyla getirildi",
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
+
+	log.Info().Int("user_id", userID).Msg("Kullanıcı detayı getirildi")
+}
+
+// UpdateUser kullanıcı güncelleme endpoint'i
+func (h *UserHandler) UpdateUser(w http.ResponseWriter, r *http.Request) {
+	// Sadece PUT metoduna izin ver
+	if r.Method != http.MethodPut {
+		w.Header().Set("Allow", http.MethodPut)
+		http.Error(w, "Sadece PUT metoduna izin verilir", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Context'ten user bilgilerini al
+	claims, ok := r.Context().Value(middleware.UserContextKey).(*auth.Claims)
+	if !ok {
+		http.Error(w, "Yetkilendirme hatası", http.StatusUnauthorized)
+		return
+	}
+
+	// URL'den user ID'yi al
+	path := r.URL.Path
+	parts := strings.Split(path, "/")
+	if len(parts) < 5 {
+		http.Error(w, "Geçersiz URL formatı", http.StatusBadRequest)
+		return
+	}
+
+	// ID'yi parse et
+	idStr := parts[4] // /api/v1/users/{id}
+	targetUserID, err := strconv.Atoi(idStr)
+	if err != nil {
+		http.Error(w, "Geçersiz kullanıcı ID", http.StatusBadRequest)
+		return
+	}
+
+	// Authorization: Sadece kendi hesabını güncelleyebilir
+	if claims.UserID != targetUserID {
+		log.Warn().
+			Int("requester_id", claims.UserID).
+			Int("target_id", targetUserID).
+			Msg("Yetkisiz kullanıcı güncelleme denemesi")
+		http.Error(w, "Sadece kendi hesabınızı güncelleyebilirsiniz", http.StatusForbidden)
+		return
+	}
+
+	// JSON'u parse et
+	var req models.UpdateUserRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Geçersiz JSON formatı", http.StatusBadRequest)
+		return
+	}
+
+	// Güncelleme işlemini yap
+	updatedUser, err := h.userService.UpdateUser(targetUserID, &req)
+	if err != nil {
+		log.Error().Err(err).Int("user_id", targetUserID).Msg("Kullanıcı güncellenemedi")
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Başarılı yanıt
+	response := map[string]interface{}{
+		"success": true,
+		"data":    updatedUser,
+		"message": "Kullanıcı başarıyla güncellendi",
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
+
+	log.Info().
+		Int("user_id", targetUserID).
+		Str("updated_by", claims.Email).
+		Msg("Kullanıcı güncellendi")
+}
+
+// DeleteUser kullanıcı silme endpoint'i
+func (h *UserHandler) DeleteUser(w http.ResponseWriter, r *http.Request) {
+	// Sadece DELETE metoduna izin ver
+	if r.Method != http.MethodDelete {
+		w.Header().Set("Allow", http.MethodDelete)
+		http.Error(w, "Sadece DELETE metoduna izin verilir", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Context'ten user bilgilerini al
+	claims, ok := r.Context().Value(middleware.UserContextKey).(*auth.Claims)
+	if !ok {
+		http.Error(w, "Yetkilendirme hatası", http.StatusUnauthorized)
+		return
+	}
+
+	// URL'den user ID'yi al
+	path := r.URL.Path
+	parts := strings.Split(path, "/")
+	if len(parts) < 5 {
+		http.Error(w, "Geçersiz URL formatı", http.StatusBadRequest)
+		return
+	}
+
+	// ID'yi parse et
+	idStr := parts[4] // /api/v1/users/{id}
+	targetUserID, err := strconv.Atoi(idStr)
+	if err != nil {
+		http.Error(w, "Geçersiz kullanıcı ID", http.StatusBadRequest)
+		return
+	}
+
+	// Authorization: Sadece kendi hesabını silebilir
+	if claims.UserID != targetUserID {
+		log.Warn().
+			Int("requester_id", claims.UserID).
+			Int("target_id", targetUserID).
+			Msg("Yetkisiz kullanıcı silme denemesi")
+		http.Error(w, "Sadece kendi hesabınızı silebilirsiniz", http.StatusForbidden)
+		return
+	}
+
+	// Silme işlemini yap
+	err = h.userService.DeleteUser(targetUserID)
+	if err != nil {
+		log.Error().Err(err).Int("user_id", targetUserID).Msg("Kullanıcı silinemedi")
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Başarılı yanıt (204 No Content)
+	response := map[string]interface{}{
+		"success": true,
+		"message": "Kullanıcı başarıyla silindi",
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
+
+	log.Info().
+		Int("user_id", targetUserID).
+		Str("deleted_by", claims.Email).
+		Msg("Kullanıcı silindi (soft delete)")
 }

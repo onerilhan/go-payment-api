@@ -1,8 +1,10 @@
 package services
 
 import (
+	"database/sql"
 	"fmt"
 
+	"github.com/onerilhan/go-payment-api/internal/db"
 	"github.com/onerilhan/go-payment-api/internal/models"
 	"github.com/onerilhan/go-payment-api/internal/repository"
 )
@@ -10,14 +12,16 @@ import (
 // TransactionService transaction business logic'i
 type TransactionService struct {
 	transactionRepo *repository.TransactionRepository
-	balanceService  *BalanceService // ← Repository yerine Service
+	balanceService  *BalanceService
+	database        *sql.DB
 }
 
 // NewTransactionService yeni service oluşturur
-func NewTransactionService(transactionRepo *repository.TransactionRepository, balanceService *BalanceService) *TransactionService {
+func NewTransactionService(transactionRepo *repository.TransactionRepository, balanceService *BalanceService, database *sql.DB) *TransactionService {
 	return &TransactionService{
 		transactionRepo: transactionRepo,
-		balanceService:  balanceService, // ← Service inject et
+		balanceService:  balanceService,
+		database:        database,
 	}
 }
 
@@ -49,7 +53,7 @@ func (s *TransactionService) ValidateAmount(amount float64) error {
 	return nil
 }
 
-// Transfer kullanıcılar arası para transferi yapar
+// Transfer kullanıcılar arası para transferi yapar (rollback mechanism ile)
 func (s *TransactionService) Transfer(fromUserID int, req *models.TransferRequest) (*models.Transaction, error) {
 	// Amount validation
 	if err := s.ValidateAmount(req.Amount); err != nil {
@@ -61,52 +65,102 @@ func (s *TransactionService) Transfer(fromUserID int, req *models.TransferReques
 		return nil, fmt.Errorf("kendinize para gönderemezsiniz")
 	}
 
-	// Gönderen kullanıcının bakiyesini kontrol et
-	fromBalance, err := s.balanceService.GetBalance(fromUserID)
+	var result *models.Transaction
+
+	// Database transaction ile rollback mechanism
+	err := db.WithTransaction(s.database, func(tx *sql.Tx) error {
+		txRepo := db.NewTransactionRepository(tx)
+
+		// 1. Gönderen kullanıcının bakiyesini kontrol et ve lock et
+		var fromBalance float64
+		err := txRepo.QueryRow(`
+			SELECT amount FROM balances WHERE user_id = $1 FOR UPDATE
+		`, fromUserID).Scan(&fromBalance)
+
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("gönderen kullanıcının bakiyesi bulunamadı")
+		}
+		if err != nil {
+			return fmt.Errorf("gönderen bakiye sorgusu hatası: %w", err)
+		}
+
+		// 2. Yeterli bakiye kontrolü
+		if fromBalance < req.Amount {
+			return fmt.Errorf("yetersiz bakiye. Mevcut bakiye: %.2f TL", fromBalance)
+		}
+
+		// 3. Alan kullanıcının bakiyesini al ve lock et
+		var toBalance float64
+		err = txRepo.QueryRow(`
+			SELECT amount FROM balances WHERE user_id = $1 FOR UPDATE
+		`, req.ToUserID).Scan(&toBalance)
+
+		if err == sql.ErrNoRows {
+			// Alan kullanıcının bakiyesi yoksa oluştur
+			_, err = txRepo.Exec(`
+				INSERT INTO balances (user_id, amount) VALUES ($1, 0.00)
+			`, req.ToUserID)
+			if err != nil {
+				return fmt.Errorf("alan kullanıcı bakiyesi oluşturulamadı: %w", err)
+			}
+			toBalance = 0.00
+		} else if err != nil {
+			return fmt.Errorf("alan kullanıcı bakiye sorgusu hatası: %w", err)
+		}
+
+		// 4. Transaction kaydını oluştur
+		var transactionID int
+		var createdAt sql.NullTime
+		err = txRepo.QueryRow(`
+			INSERT INTO transactions (from_user_id, to_user_id, amount, type, status, description) 
+			VALUES ($1, $2, $3, 'transfer', 'completed', $4)
+			RETURNING id, created_at
+		`, fromUserID, req.ToUserID, req.Amount, req.Description).Scan(&transactionID, &createdAt)
+
+		if err != nil {
+			return fmt.Errorf("transaction kaydı oluşturulamadı: %w", err)
+		}
+
+		// 5. Bakiyeleri güncelle
+		newFromBalance := fromBalance - req.Amount
+		newToBalance := toBalance + req.Amount
+
+		// Gönderen bakiyesini güncelle
+		_, err = txRepo.Exec(`
+			UPDATE balances SET amount = $1 WHERE user_id = $2
+		`, newFromBalance, fromUserID)
+		if err != nil {
+			return fmt.Errorf("gönderen bakiye güncellenemedi: %w", err)
+		}
+
+		// Alan bakiyesini güncelle
+		_, err = txRepo.Exec(`
+			UPDATE balances SET amount = $1 WHERE user_id = $2
+		`, newToBalance, req.ToUserID)
+		if err != nil {
+			return fmt.Errorf("alan bakiye güncellenemedi: %w", err)
+		}
+
+		// 6. Result struct'ını oluştur
+		result = &models.Transaction{
+			ID:          transactionID,
+			FromUserID:  &fromUserID,
+			ToUserID:    &req.ToUserID,
+			Amount:      req.Amount,
+			Type:        "transfer",
+			Status:      "completed",
+			Description: req.Description,
+			CreatedAt:   createdAt.Time,
+		}
+
+		return nil // SUCCESS - transaction commit edilecek
+	})
+
 	if err != nil {
-		return nil, fmt.Errorf("bakiye alınamadı: %w", err)
+		return nil, err
 	}
 
-	// Yeterli bakiye kontrolü
-	if fromBalance.Amount < req.Amount {
-		return nil, fmt.Errorf("yetersiz bakiye. Mevcut bakiye: %.2f TL", fromBalance.Amount)
-	}
-
-	// Alan kullanıcının bakiyesini al (yoksa oluştur)
-	toBalance, err := s.balanceService.GetBalance(req.ToUserID)
-	if err != nil {
-		return nil, fmt.Errorf("alıcı kullanıcı bakiye hatası: %w", err)
-	}
-
-	// Transaction oluştur
-	transaction := &models.Transaction{
-		FromUserID:  &fromUserID,
-		ToUserID:    &req.ToUserID,
-		Amount:      req.Amount,
-		Type:        "transfer",
-		Status:      "completed",
-		Description: req.Description,
-	}
-
-	// Transaction'ı kaydet
-	createdTx, err := s.transactionRepo.Create(transaction)
-	if err != nil {
-		return nil, fmt.Errorf("transaction oluşturulamadı: %w", err)
-	}
-
-	// Bakiyeleri güncelle (BUG DÜZELTME: toBalance.Amount kullan)
-	newFromAmount := fromBalance.Amount - req.Amount
-	newToAmount := toBalance.Amount + req.Amount
-
-	if err := s.balanceService.UpdateBalance(fromUserID, newFromAmount); err != nil {
-		return nil, fmt.Errorf("gönderen bakiye güncellenemedi: %w", err)
-	}
-
-	if err := s.balanceService.UpdateBalance(req.ToUserID, newToAmount); err != nil {
-		return nil, fmt.Errorf("alan bakiye güncellenemedi: %w", err)
-	}
-
-	return createdTx, nil
+	return result, nil
 }
 
 // GetUserTransactions kullanıcının transaction geçmişini getirir
@@ -119,7 +173,7 @@ func (s *TransactionService) GetUserTransactions(userID int, limit, offset int) 
 	return transactions, nil
 }
 
-// Credit kullanıcının hesabına para yatırır
+// Credit kullanıcının hesabına para yatırır (rollback mechanism ile)
 func (s *TransactionService) Credit(userID int, req *models.CreditRequest) (*models.Transaction, error) {
 	// Amount validation
 	if err := s.ValidateAmount(req.Amount); err != nil {
@@ -132,34 +186,168 @@ func (s *TransactionService) Credit(userID int, req *models.CreditRequest) (*mod
 		description = "Hesaba para yatırma"
 	}
 
-	// Kullanıcının mevcut bakiyesini al
-	balance, err := s.balanceService.GetBalance(userID)
+	var result *models.Transaction
+
+	// Database transaction ile rollback mechanism
+	err := db.WithTransaction(s.database, func(tx *sql.Tx) error {
+		txRepo := db.NewTransactionRepository(tx)
+
+		// 1. Kullanıcının mevcut bakiyesini al ve lock et
+		var currentBalance float64
+		err := txRepo.QueryRow(`
+			SELECT amount FROM balances WHERE user_id = $1 FOR UPDATE
+		`, userID).Scan(&currentBalance)
+
+		if err == sql.ErrNoRows {
+			// Bakiye yoksa oluştur
+			_, err = txRepo.Exec(`
+				INSERT INTO balances (user_id, amount) VALUES ($1, 0.00)
+			`, userID)
+			if err != nil {
+				return fmt.Errorf("bakiye oluşturulamadı: %w", err)
+			}
+			currentBalance = 0.00
+		} else if err != nil {
+			return fmt.Errorf("bakiye sorgusu hatası: %w", err)
+		}
+
+		// 2. Transaction kaydını oluştur
+		var transactionID int
+		var createdAt sql.NullTime
+		err = txRepo.QueryRow(`
+			INSERT INTO transactions (to_user_id, from_user_id, amount, type, status, description) 
+			VALUES ($1, NULL, $2, 'credit', 'completed', $3)
+			RETURNING id, created_at
+		`, userID, req.Amount, description).Scan(&transactionID, &createdAt)
+
+		if err != nil {
+			return fmt.Errorf("transaction kaydı oluşturulamadı: %w", err)
+		}
+
+		// 3. Bakiyeyi artır
+		newBalance := currentBalance + req.Amount
+		_, err = txRepo.Exec(`
+			UPDATE balances SET amount = $1 WHERE user_id = $2
+		`, newBalance, userID)
+		if err != nil {
+			return fmt.Errorf("bakiye güncellenemedi: %w", err)
+		}
+
+		// 4. Result struct'ını oluştur
+		result = &models.Transaction{
+			ID:          transactionID,
+			ToUserID:    &userID,
+			FromUserID:  nil,
+			Amount:      req.Amount,
+			Type:        "credit",
+			Status:      "completed",
+			Description: description,
+			CreatedAt:   createdAt.Time,
+		}
+
+		return nil // SUCCESS - transaction commit edilecek
+	})
+
 	if err != nil {
-		return nil, fmt.Errorf("bakiye alınamadı: %w", err)
+		return nil, err
 	}
 
-	// Transaction oluştur
-	transaction := &models.Transaction{
-		ToUserID:    &userID,
-		FromUserID:  nil, // Sistem kredisi
-		Amount:      req.Amount,
-		Type:        "credit",
-		Status:      "completed",
-		Description: description,
+	return result, nil
+}
+
+// Debit kullanıcının hesabından para çeker (rollback mechanism ile)
+func (s *TransactionService) Debit(userID int, req *models.DebitRequest) (*models.Transaction, error) {
+	// Amount validation
+	if err := s.ValidateAmount(req.Amount); err != nil {
+		return nil, err
 	}
 
-	// Transaction'ı kaydet
-	createdTx, err := s.transactionRepo.Create(transaction)
+	// Default description
+	description := req.Description
+	if description == "" {
+		description = "Hesaptan para çekme"
+	}
+
+	var result *models.Transaction
+
+	// Database transaction ile rollback mechanism
+	err := db.WithTransaction(s.database, func(tx *sql.Tx) error {
+		txRepo := db.NewTransactionRepository(tx)
+
+		// 1. Kullanıcının mevcut bakiyesini al ve lock et
+		var currentBalance float64
+		err := txRepo.QueryRow(`
+			SELECT amount FROM balances WHERE user_id = $1 FOR UPDATE
+		`, userID).Scan(&currentBalance)
+
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("kullanıcının bakiyesi bulunamadı")
+		}
+		if err != nil {
+			return fmt.Errorf("bakiye sorgusu hatası: %w", err)
+		}
+
+		// 2. Yeterli bakiye kontrolü
+		if currentBalance < req.Amount {
+			return fmt.Errorf("yetersiz bakiye. Mevcut bakiye: %.2f TL", currentBalance)
+		}
+
+		// 3. Transaction kaydını oluştur
+		var transactionID int
+		var createdAt sql.NullTime
+		err = txRepo.QueryRow(`
+			INSERT INTO transactions (from_user_id, to_user_id, amount, type, status, description) 
+			VALUES ($1, NULL, $2, 'debit', 'completed', $3)
+			RETURNING id, created_at
+		`, userID, req.Amount, description).Scan(&transactionID, &createdAt)
+
+		if err != nil {
+			return fmt.Errorf("transaction kaydı oluşturulamadı: %w", err)
+		}
+
+		// 4. Bakiyeyi azalt
+		newBalance := currentBalance - req.Amount
+		_, err = txRepo.Exec(`
+			UPDATE balances SET amount = $1 WHERE user_id = $2
+		`, newBalance, userID)
+		if err != nil {
+			return fmt.Errorf("bakiye güncellenemedi: %w", err)
+		}
+
+		// 5. Result struct'ını oluştur
+		result = &models.Transaction{
+			ID:          transactionID,
+			FromUserID:  &userID,
+			ToUserID:    nil,
+			Amount:      req.Amount,
+			Type:        "debit",
+			Status:      "completed",
+			Description: description,
+			CreatedAt:   createdAt.Time,
+		}
+
+		return nil // SUCCESS - transaction commit edilecek
+	})
+
 	if err != nil {
-		return nil, fmt.Errorf("transaction oluşturulamadı: %w", err)
+		return nil, err
 	}
 
-	// Bakiyeyi artır (TODO: Database transaction ile rollback ekle)
-	newAmount := balance.Amount + req.Amount
-	if err := s.balanceService.UpdateBalance(userID, newAmount); err != nil {
-		// TODO: createdTx'i rollback et
-		return nil, fmt.Errorf("bakiye güncellenemedi: %w", err)
+	return result, nil
+}
+
+// GetTransactionByID ID ile transaction getirir
+func (s *TransactionService) GetTransactionByID(id int) (*models.Transaction, error) {
+	// ID validation
+	if id <= 0 {
+		return nil, fmt.Errorf("geçersiz transaction ID")
 	}
 
-	return createdTx, nil
+	// Repository'den transaction'ı al
+	transaction, err := s.transactionRepo.GetByID(id)
+	if err != nil {
+		return nil, fmt.Errorf("transaction bulunamadı: %w", err)
+	}
+
+	return transaction, nil
 }

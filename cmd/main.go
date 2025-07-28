@@ -47,7 +47,7 @@ func main() {
 
 	userService := services.NewUserService(userRepo)
 	balanceService := services.NewBalanceService(balanceRepo) // ← YENİ
-	transactionService := services.NewTransactionService(transactionRepo, balanceService)
+	transactionService := services.NewTransactionService(transactionRepo, balanceService, database)
 
 	// Transaction Queue oluştur (3 worker, 50 buffer)
 	transactionQueue := services.NewTransactionQueue(3, transactionService, 50) // ← YENİ
@@ -65,10 +65,27 @@ func main() {
 	http.HandleFunc("/api/v1/auth/login", userHandler.Login)
 	http.HandleFunc("/api/v1/auth/refresh", userHandler.Refresh)
 	http.HandleFunc("/api/v1/users/profile", middleware.AuthMiddleware(userHandler.GetProfile))
+	http.HandleFunc("/api/v1/users/", middleware.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			userHandler.GetUserByID(w, r)
+		case http.MethodPut:
+			userHandler.UpdateUser(w, r)
+		case http.MethodDelete:
+			userHandler.DeleteUser(w, r)
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	}))
+	http.HandleFunc("/api/v1/users", middleware.AuthMiddleware(userHandler.GetAllUsers))
 	http.HandleFunc("/api/v1/transactions/transfer", middleware.AuthMiddleware(transactionHandler.Transfer))
 	http.HandleFunc("/api/v1/transactions/credit", middleware.AuthMiddleware(transactionHandler.Credit))
+	http.HandleFunc("/api/v1/transactions/debit", middleware.AuthMiddleware(transactionHandler.Debit))
+	http.HandleFunc("/api/v1/transactions/", middleware.AuthMiddleware(transactionHandler.GetTransactionByID))
 	http.HandleFunc("/api/v1/transactions/history", middleware.AuthMiddleware(transactionHandler.GetHistory))
 	http.HandleFunc("/api/v1/balances/current", middleware.AuthMiddleware(balanceHandler.GetCurrentBalance))
+	http.HandleFunc("/api/v1/balances/historical", middleware.AuthMiddleware(balanceHandler.GetBalanceHistory))
+	http.HandleFunc("/api/v1/balances/at-time", middleware.AuthMiddleware(balanceHandler.GetBalanceAtTime))
 
 	// Server'ı başlat
 	serverAddr := ":" + cfg.Port

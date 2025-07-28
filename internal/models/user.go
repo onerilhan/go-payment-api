@@ -39,3 +39,10 @@ type RefreshResponse struct {
 	ExpiresIn int64  `json:"expires_in"`
 	Message   string `json:"message"`
 }
+
+// UpdateUserRequest kullanıcı güncelleme isteği
+type UpdateUserRequest struct {
+	Name     *string `json:"name,omitempty"`     // Pointer kullandık çünkü optional
+	Email    *string `json:"email,omitempty"`    // nil = değiştirilmeyecek
+	Password *string `json:"password,omitempty"` // empty string ≠ nil
+}
