@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
-	"strings"
 
+	"github.com/gorilla/mux"
 	"github.com/rs/zerolog/log"
 
 	"github.com/onerilhan/go-payment-api/internal/auth"
@@ -277,15 +277,8 @@ func (h *TransactionHandler) Debit(w http.ResponseWriter, r *http.Request) {
 		Msg("Debit işlemi tamamlandı")
 }
 
-// GetTransactionByID ID ile transaction getirme endpoint'i
+// GetTransactionByID ID ile transaction getirme endpoint'i (Gorilla Mux version)
 func (h *TransactionHandler) GetTransactionByID(w http.ResponseWriter, r *http.Request) {
-	// Sadece GET metoduna izin ver
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", http.MethodGet)
-		http.Error(w, "Sadece GET metoduna izin verilir", http.StatusMethodNotAllowed)
-		return
-	}
-
 	// Context'ten user bilgilerini al
 	claims, ok := r.Context().Value(middleware.UserContextKey).(*auth.Claims)
 	if !ok {
@@ -293,17 +286,15 @@ func (h *TransactionHandler) GetTransactionByID(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	// URL'den transaction ID'yi al
-	// URL format: /api/v1/transactions/{id}
-	path := r.URL.Path
-	parts := strings.Split(path, "/")
-	if len(parts) < 5 {
-		http.Error(w, "Geçersiz URL formatı", http.StatusBadRequest)
+	// Gorilla Mux'tan URL parameter'ı al
+	vars := mux.Vars(r)
+	idStr, exists := vars["id"]
+	if !exists {
+		http.Error(w, "Transaction ID parametresi gerekli", http.StatusBadRequest)
 		return
 	}
 
 	// ID'yi parse et
-	idStr := parts[4] // /api/v1/transactions/{id}
 	transactionID, err := strconv.Atoi(idStr)
 	if err != nil {
 		http.Error(w, "Geçersiz transaction ID", http.StatusBadRequest)

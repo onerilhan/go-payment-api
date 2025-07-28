@@ -1,9 +1,15 @@
 package main
 
 import (
+	"context"
 	stdlog "log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
+	"github.com/gorilla/mux"
 	"github.com/joho/godotenv"
 	"github.com/rs/zerolog/log"
 
@@ -46,52 +52,127 @@ func main() {
 	balanceRepo := repository.NewBalanceRepository(database)
 
 	userService := services.NewUserService(userRepo)
-	balanceService := services.NewBalanceService(balanceRepo) // ← YENİ
+	balanceService := services.NewBalanceService(balanceRepo)
 	transactionService := services.NewTransactionService(transactionRepo, balanceService, database)
 
 	// Transaction Queue oluştur (3 worker, 50 buffer)
-	transactionQueue := services.NewTransactionQueue(3, transactionService, 50) // ← YENİ
-	transactionQueue.Start()                                                    // ← YENİ: Queue'yu başlat
-
-	// Graceful shutdown için cleanup
-	defer transactionQueue.Stop() // ← YENİ: Program kapanırken queue'yu durdur
+	transactionQueue := services.NewTransactionQueue(3, transactionService, 50)
+	transactionQueue.Start()
 
 	userHandler := handlers.NewUserHandler(userService)
 	balanceHandler := handlers.NewBalanceHandler(balanceService)
-	transactionHandler := handlers.NewTransactionHandler(transactionService, transactionQueue, balanceService) // ← GÜNCEL
+	transactionHandler := handlers.NewTransactionHandler(transactionService, transactionQueue, balanceService)
 
-	// HTTP routes
-	http.HandleFunc("/api/v1/auth/register", userHandler.Register)
-	http.HandleFunc("/api/v1/auth/login", userHandler.Login)
-	http.HandleFunc("/api/v1/auth/refresh", userHandler.Refresh)
-	http.HandleFunc("/api/v1/users/profile", middleware.AuthMiddleware(userHandler.GetProfile))
-	http.HandleFunc("/api/v1/users/", middleware.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			userHandler.GetUserByID(w, r)
-		case http.MethodPut:
-			userHandler.UpdateUser(w, r)
-		case http.MethodDelete:
-			userHandler.DeleteUser(w, r)
-		default:
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		}
-	}))
-	http.HandleFunc("/api/v1/users", middleware.AuthMiddleware(userHandler.GetAllUsers))
-	http.HandleFunc("/api/v1/transactions/transfer", middleware.AuthMiddleware(transactionHandler.Transfer))
-	http.HandleFunc("/api/v1/transactions/credit", middleware.AuthMiddleware(transactionHandler.Credit))
-	http.HandleFunc("/api/v1/transactions/debit", middleware.AuthMiddleware(transactionHandler.Debit))
-	http.HandleFunc("/api/v1/transactions/", middleware.AuthMiddleware(transactionHandler.GetTransactionByID))
-	http.HandleFunc("/api/v1/transactions/history", middleware.AuthMiddleware(transactionHandler.GetHistory))
-	http.HandleFunc("/api/v1/balances/current", middleware.AuthMiddleware(balanceHandler.GetCurrentBalance))
-	http.HandleFunc("/api/v1/balances/historical", middleware.AuthMiddleware(balanceHandler.GetBalanceHistory))
-	http.HandleFunc("/api/v1/balances/at-time", middleware.AuthMiddleware(balanceHandler.GetBalanceAtTime))
+	// Gorilla Mux Router Setup
+	router := setupRouter(userHandler, balanceHandler, transactionHandler)
 
-	// Server'ı başlat
+	// HTTP Server configuration
 	serverAddr := ":" + cfg.Port
-	log.Info().Str("port", cfg.Port).Msg("🌐 HTTP Server başlatıldı")
-
-	if err := http.ListenAndServe(serverAddr, nil); err != nil {
-		log.Fatal().Err(err).Msg("❌ Server başlatılamadı")
+	server := &http.Server{
+		Addr:         serverAddr,
+		Handler:      router,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
 	}
+
+	// Graceful shutdown setup
+	shutdown := make(chan os.Signal, 1)
+	signal.Notify(shutdown, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
+
+	// Server'ı goroutine'de başlat
+	go func() {
+		log.Info().
+			Str("port", cfg.Port).
+			Str("addr", serverAddr).
+			Int("read_timeout", 15).
+			Int("write_timeout", 15).
+			Int("idle_timeout", 60).
+			Msg("🌐 HTTP Server (Gorilla Mux) başlatıldı")
+
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatal().Err(err).Msg("❌ Server başlatma hatası")
+		}
+	}()
+
+	// Shutdown signal'ını bekle
+	<-shutdown
+	log.Info().Msg("🛑 Shutdown signal alındı, server kapatılıyor...")
+
+	// Graceful shutdown sequence
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer shutdownCancel()
+
+	// 1. HTTP Server'ı kapat (aktif bağlantıları bekle)
+	log.Info().Msg("📡 HTTP Server kapatılıyor...")
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Error().Err(err).Msg("❌ HTTP Server kapatma hatası")
+	} else {
+		log.Info().Msg("✅ HTTP Server başarıyla kapatıldı")
+	}
+
+	// 2. Transaction Queue'yu kapat
+	log.Info().Msg("🔄 Transaction Queue kapatılıyor...")
+	transactionQueue.Stop()
+	log.Info().Msg("✅ Transaction Queue başarıyla kapatıldı")
+
+	// 3. Database bağlantısını kapat (defer ile zaten kapatılacak)
+	log.Info().Msg("🗄️  Database bağlantısı kapatılıyor...")
+
+	log.Info().Msg("👋 Ödeme API başarıyla kapatıldı")
+}
+
+// setupRouter Gorilla Mux router'ını ayarlar
+func setupRouter(userHandler *handlers.UserHandler, balanceHandler *handlers.BalanceHandler, transactionHandler *handlers.TransactionHandler) *mux.Router {
+	router := mux.NewRouter()
+
+	// API v1 subrouter
+	api := router.PathPrefix("/api/v1").Subrouter()
+
+	// Public endpoints (Authentication)
+	auth := api.PathPrefix("/auth").Subrouter()
+	auth.HandleFunc("/register", userHandler.Register).Methods("POST")
+	auth.HandleFunc("/login", userHandler.Login).Methods("POST")
+	auth.HandleFunc("/refresh", userHandler.Refresh).Methods("POST")
+
+	// Protected endpoints (Authentication required)
+	protected := api.NewRoute().Subrouter()
+	protected.Use(middleware.AuthMiddleware)
+
+	// User endpoints
+	users := protected.PathPrefix("/users").Subrouter()
+	users.HandleFunc("", userHandler.GetAllUsers).Methods("GET")
+	users.HandleFunc("/profile", userHandler.GetProfile).Methods("GET")
+	users.HandleFunc("/{id:[0-9]+}", userHandler.GetUserByID).Methods("GET")
+	users.HandleFunc("/{id:[0-9]+}", userHandler.UpdateUser).Methods("PUT")
+	users.HandleFunc("/{id:[0-9]+}", userHandler.DeleteUser).Methods("DELETE")
+
+	// Transaction endpoints
+	transactions := protected.PathPrefix("/transactions").Subrouter()
+	transactions.HandleFunc("/credit", transactionHandler.Credit).Methods("POST")
+	transactions.HandleFunc("/debit", transactionHandler.Debit).Methods("POST")
+	transactions.HandleFunc("/transfer", transactionHandler.Transfer).Methods("POST")
+	transactions.HandleFunc("/history", transactionHandler.GetHistory).Methods("GET")
+	transactions.HandleFunc("/{id:[0-9]+}", transactionHandler.GetTransactionByID).Methods("GET")
+
+	// Balance endpoints
+	balances := protected.PathPrefix("/balances").Subrouter()
+	balances.HandleFunc("/current", balanceHandler.GetCurrentBalance).Methods("GET")
+	balances.HandleFunc("/historical", balanceHandler.GetBalanceHistory).Methods("GET")
+	balances.HandleFunc("/at-time", balanceHandler.GetBalanceAtTime).Methods("GET")
+
+	// Route listesini log'la (development için)
+	router.Walk(func(route *mux.Route, router *mux.Router, ancestors []*mux.Route) error {
+		pathTemplate, err := route.GetPathTemplate()
+		if err == nil {
+			methods, _ := route.GetMethods()
+			log.Debug().
+				Str("path", pathTemplate).
+				Strs("methods", methods).
+				Msg("📍 Route registered")
+		}
+		return nil
+	})
+
+	return router
 }

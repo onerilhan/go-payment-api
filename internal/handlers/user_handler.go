@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
-	"strings"
 
+	"github.com/gorilla/mux"
 	"github.com/rs/zerolog/log"
 
 	"github.com/onerilhan/go-payment-api/internal/auth"
@@ -223,14 +223,8 @@ func (h *UserHandler) GetAllUsers(w http.ResponseWriter, r *http.Request) {
 		Msg("Kullanıcı listesi getirildi")
 }
 
-// GetUserByID ID ile tek kullanıcı getirme endpoint'i
+// GetUserByID ID ile tek kullanıcı getirme endpoint'i (Gorilla Mux version)
 func (h *UserHandler) GetUserByID(w http.ResponseWriter, r *http.Request) {
-	// Sadece GET metoduna izin ver
-	if r.Method != http.MethodGet {
-		http.Error(w, "Sadece GET metoduna izin verilir", http.StatusMethodNotAllowed)
-		return
-	}
-
 	// Context'ten user bilgilerini al (authentication kontrolü)
 	_, ok := r.Context().Value(middleware.UserContextKey).(*auth.Claims)
 	if !ok {
@@ -238,17 +232,15 @@ func (h *UserHandler) GetUserByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// URL'den user ID'yi al
-	// URL format: /api/v1/users/{id}
-	path := r.URL.Path
-	parts := strings.Split(path, "/")
-	if len(parts) < 5 {
-		http.Error(w, "Geçersiz URL formatı", http.StatusBadRequest)
+	// Gorilla Mux'tan URL parameter'ı al
+	vars := mux.Vars(r)
+	idStr, exists := vars["id"]
+	if !exists {
+		http.Error(w, "Kullanıcı ID parametresi gerekli", http.StatusBadRequest)
 		return
 	}
 
 	// ID'yi parse et
-	idStr := parts[4] // /api/v1/users/{id}
 	userID, err := strconv.Atoi(idStr)
 	if err != nil {
 		http.Error(w, "Geçersiz kullanıcı ID", http.StatusBadRequest)
@@ -277,15 +269,8 @@ func (h *UserHandler) GetUserByID(w http.ResponseWriter, r *http.Request) {
 	log.Info().Int("user_id", userID).Msg("Kullanıcı detayı getirildi")
 }
 
-// UpdateUser kullanıcı güncelleme endpoint'i
+// UpdateUser kullanıcı güncelleme endpoint'i (Gorilla Mux version)
 func (h *UserHandler) UpdateUser(w http.ResponseWriter, r *http.Request) {
-	// Sadece PUT metoduna izin ver
-	if r.Method != http.MethodPut {
-		w.Header().Set("Allow", http.MethodPut)
-		http.Error(w, "Sadece PUT metoduna izin verilir", http.StatusMethodNotAllowed)
-		return
-	}
-
 	// Context'ten user bilgilerini al
 	claims, ok := r.Context().Value(middleware.UserContextKey).(*auth.Claims)
 	if !ok {
@@ -293,16 +278,15 @@ func (h *UserHandler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// URL'den user ID'yi al
-	path := r.URL.Path
-	parts := strings.Split(path, "/")
-	if len(parts) < 5 {
-		http.Error(w, "Geçersiz URL formatı", http.StatusBadRequest)
+	// Gorilla Mux'tan URL parameter'ı al
+	vars := mux.Vars(r)
+	idStr, exists := vars["id"]
+	if !exists {
+		http.Error(w, "Kullanıcı ID parametresi gerekli", http.StatusBadRequest)
 		return
 	}
 
 	// ID'yi parse et
-	idStr := parts[4] // /api/v1/users/{id}
 	targetUserID, err := strconv.Atoi(idStr)
 	if err != nil {
 		http.Error(w, "Geçersiz kullanıcı ID", http.StatusBadRequest)
@@ -351,15 +335,8 @@ func (h *UserHandler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 		Msg("Kullanıcı güncellendi")
 }
 
-// DeleteUser kullanıcı silme endpoint'i
+// DeleteUser kullanıcı silme endpoint'i (Gorilla Mux version)
 func (h *UserHandler) DeleteUser(w http.ResponseWriter, r *http.Request) {
-	// Sadece DELETE metoduna izin ver
-	if r.Method != http.MethodDelete {
-		w.Header().Set("Allow", http.MethodDelete)
-		http.Error(w, "Sadece DELETE metoduna izin verilir", http.StatusMethodNotAllowed)
-		return
-	}
-
 	// Context'ten user bilgilerini al
 	claims, ok := r.Context().Value(middleware.UserContextKey).(*auth.Claims)
 	if !ok {
@@ -367,16 +344,15 @@ func (h *UserHandler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// URL'den user ID'yi al
-	path := r.URL.Path
-	parts := strings.Split(path, "/")
-	if len(parts) < 5 {
-		http.Error(w, "Geçersiz URL formatı", http.StatusBadRequest)
+	// Gorilla Mux'tan URL parameter'ı al
+	vars := mux.Vars(r)
+	idStr, exists := vars["id"]
+	if !exists {
+		http.Error(w, "Kullanıcı ID parametresi gerekli", http.StatusBadRequest)
 		return
 	}
 
 	// ID'yi parse et
-	idStr := parts[4] // /api/v1/users/{id}
 	targetUserID, err := strconv.Atoi(idStr)
 	if err != nil {
 		http.Error(w, "Geçersiz kullanıcı ID", http.StatusBadRequest)
@@ -401,7 +377,7 @@ func (h *UserHandler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Başarılı yanıt (204 No Content)
+	// Başarılı yanıt
 	response := map[string]interface{}{
 		"success": true,
 		"message": "Kullanıcı başarıyla silindi",

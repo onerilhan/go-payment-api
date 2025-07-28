@@ -14,13 +14,16 @@ type ContextKey string
 
 const UserContextKey ContextKey = "user"
 
-// AuthMiddleware JWT token kontrolü yapar
-func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
+// AuthMiddleware JWT token kontrolü yapar (Gorilla Mux için middleware)
+func AuthMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Authorization header'ını al
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
-			log.Warn().Msg("Authorization header eksik")
+			log.Warn().
+				Str("path", r.URL.Path).
+				Str("method", r.Method).
+				Msg("Authorization header eksik")
 			http.Error(w, "Authorization header gerekli", http.StatusUnauthorized)
 			return
 		}
@@ -28,7 +31,10 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		// "Bearer " prefix'ini kontrol et
 		tokenParts := strings.Split(authHeader, " ")
 		if len(tokenParts) != 2 || tokenParts[0] != "Bearer" {
-			log.Warn().Msg("Geçersiz Authorization format")
+			log.Warn().
+				Str("path", r.URL.Path).
+				Str("auth_header", authHeader).
+				Msg("Geçersiz Authorization format")
 			http.Error(w, "Authorization format: 'Bearer <token>'", http.StatusUnauthorized)
 			return
 		}
@@ -39,7 +45,10 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		// Token'ı doğrula
 		claims, err := auth.ValidateToken(tokenString)
 		if err != nil {
-			log.Warn().Err(err).Msg("Token doğrulama başarısız")
+			log.Warn().
+				Err(err).
+				Str("path", r.URL.Path).
+				Msg("Token doğrulama başarısız")
 			http.Error(w, "Geçersiz token", http.StatusUnauthorized)
 			return
 		}
@@ -48,7 +57,14 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		ctx := context.WithValue(r.Context(), UserContextKey, claims)
 		r = r.WithContext(ctx)
 
+		log.Debug().
+			Int("user_id", claims.UserID).
+			Str("email", claims.Email).
+			Str("path", r.URL.Path).
+			Str("method", r.Method).
+			Msg("🔐 Authentication successful")
+
 		// Sonraki handler'a geç
 		next.ServeHTTP(w, r)
-	}
+	})
 }
