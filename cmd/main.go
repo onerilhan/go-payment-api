@@ -182,6 +182,22 @@ func performGracefulShutdown(server *http.Server, transactionQueue *services.Tra
 // setupRouter Gorilla Mux router'ını ayarlar
 func setupRouter(userHandler *handlers.UserHandler, balanceHandler *handlers.BalanceHandler, transactionHandler *handlers.TransactionHandler) *mux.Router {
 	router := mux.NewRouter()
+
+	// CORS middleware
+	router.Use(middleware.CORSMiddlewareWithDefaults())
+	// Logger middleware
+	router.Use(middleware.RequestLoggingMiddlewareWithDefaults())
+	// Security headers middleware
+	router.Use(middleware.SecurityHeadersMiddlewareWithDefaults())
+	// Rate limit middleware
+	router.Use(middleware.RateLimitMiddlewareWithDefaults())
+
+	// Global OPTIONS handler - tüm route'lar için otomatik OPTIONS support
+	router.Methods("OPTIONS").HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// CORS middleware zaten header'ları set etti
+		// Sadece 204 No Content döndür
+		w.WriteHeader(http.StatusNoContent)
+	})
 	router.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
