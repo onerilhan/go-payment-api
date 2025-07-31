@@ -10,6 +10,7 @@ import (
 
 	"github.com/onerilhan/go-payment-api/internal/auth"
 	"github.com/onerilhan/go-payment-api/internal/middleware"
+	"github.com/onerilhan/go-payment-api/internal/middleware/errors"
 	"github.com/onerilhan/go-payment-api/internal/models"
 	"github.com/onerilhan/go-payment-api/internal/services"
 )
@@ -28,15 +29,23 @@ func NewUserHandler(userService *services.UserService) *UserHandler {
 func (h *UserHandler) Register(w http.ResponseWriter, r *http.Request) {
 	// Sadece POST metoduna izin ver
 	if r.Method != http.MethodPost {
-		http.Error(w, "Sadece POST metoduna izin verilir", http.StatusMethodNotAllowed)
-		return
+		panic(&errors.ValidationError{
+			Message:    "Sadece POST metoduna izin verilir",
+			StatusCode: http.StatusMethodNotAllowed,
+			Field:      "method",
+			Value:      r.Method,
+		})
 	}
 
 	// JSON'u parse et
 	var req models.CreateUserRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Geçersiz JSON formatı", http.StatusBadRequest)
-		return
+		panic(&errors.ValidationError{
+			Message:    "Geçersiz JSON formatı",
+			StatusCode: http.StatusBadRequest,
+			Field:      "body",
+			Value:      err.Error(),
+		})
 	}
 
 	//  YENİ VALİDASYON KONTROLÜ
@@ -46,16 +55,24 @@ func (h *UserHandler) Register(w http.ResponseWriter, r *http.Request) {
 			Str("email", req.Email).
 			Str("name", req.Name).
 			Msg("❌ Validation hatası")
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+		panic(&errors.ValidationError{
+			Message:    err.Error(),
+			StatusCode: http.StatusBadRequest,
+			Field:      "validation",
+			Value:      req,
+		})
 	}
 
 	// Kullanıcıyı oluştur
 	user, err := h.userService.Register(&req)
 	if err != nil {
 		log.Error().Err(err).Msg("Kullanıcı kaydı başarısız")
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+		panic(&errors.ValidationError{
+			Message:    err.Error(),
+			StatusCode: http.StatusBadRequest,
+			Field:      "registration",
+			Value:      req.Email,
+		})
 	}
 
 	// Başarılı yanıt
@@ -73,15 +90,23 @@ func (h *UserHandler) Register(w http.ResponseWriter, r *http.Request) {
 func (h *UserHandler) Login(w http.ResponseWriter, r *http.Request) {
 	// Sadece POST metoduna izin ver
 	if r.Method != http.MethodPost {
-		http.Error(w, "Sadece POST metoduna izin verilir", http.StatusMethodNotAllowed)
-		return
+		panic(&errors.ValidationError{
+			Message:    "Sadece POST metoduna izin verilir",
+			StatusCode: http.StatusMethodNotAllowed,
+			Field:      "method",
+			Value:      r.Method,
+		})
 	}
 
 	// JSON'u parse et
 	var req models.LoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Geçersiz JSON formatı", http.StatusBadRequest)
-		return
+		panic(&errors.ValidationError{
+			Message:    "Geçersiz JSON formatı",
+			StatusCode: http.StatusBadRequest,
+			Field:      "body",
+			Value:      err.Error(),
+		})
 	}
 
 	//  YENİ VALİDASYON KONTROLÜ
@@ -90,16 +115,22 @@ func (h *UserHandler) Login(w http.ResponseWriter, r *http.Request) {
 			Err(err).
 			Str("email", req.Email).
 			Msg("❌ Login validation hatası")
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+		panic(&errors.ValidationError{
+			Message:    err.Error(),
+			StatusCode: http.StatusBadRequest,
+			Field:      "validation",
+			Value:      req.Email,
+		})
 	}
 
 	// Kullanıcı girişi yap
 	user, err := h.userService.Login(&req)
 	if err != nil {
 		log.Error().Err(err).Msg("Giriş başarısız")
-		http.Error(w, err.Error(), http.StatusUnauthorized)
-		return
+		panic(&errors.AuthError{
+			Message:    err.Error(),
+			StatusCode: http.StatusUnauthorized,
+		})
 	}
 
 	// Başarılı yanıt
@@ -117,23 +148,33 @@ func (h *UserHandler) Login(w http.ResponseWriter, r *http.Request) {
 func (h *UserHandler) GetProfile(w http.ResponseWriter, r *http.Request) {
 	// Sadece GET metoduna izin ver
 	if r.Method != http.MethodGet {
-		http.Error(w, "Sadece GET metoduna izin verilir", http.StatusMethodNotAllowed)
-		return
+		panic(&errors.ValidationError{
+			Message:    "Sadece GET metoduna izin verilir",
+			StatusCode: http.StatusMethodNotAllowed,
+			Field:      "method",
+			Value:      r.Method,
+		})
 	}
 
 	// Context'ten user bilgilerini al
 	claims, ok := r.Context().Value(middleware.UserContextKey).(*auth.Claims)
 	if !ok {
-		http.Error(w, "User bilgisi bulunamadı", http.StatusInternalServerError)
-		return
+		panic(&errors.AuthError{
+			Message:    "User bilgisi bulunamadı",
+			StatusCode: http.StatusInternalServerError,
+		})
 	}
 
 	// User ID ile kullanıcıyı bul
 	user, err := h.userService.GetUserByID(claims.UserID)
 	if err != nil {
 		log.Error().Err(err).Int("user_id", claims.UserID).Msg("Kullanıcı bulunamadı")
-		http.Error(w, "Kullanıcı bulunamadı", http.StatusNotFound)
-		return
+		panic(&errors.ValidationError{
+			Message:    "Kullanıcı bulunamadı",
+			StatusCode: http.StatusNotFound,
+			Field:      "user_id",
+			Value:      claims.UserID,
+		})
 	}
 
 	// Başarılı yanıt
@@ -148,23 +189,33 @@ func (h *UserHandler) GetProfile(w http.ResponseWriter, r *http.Request) {
 func (h *UserHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
-		http.Error(w, "Sadece POST metoduna izin verilir", http.StatusMethodNotAllowed)
-		return
+		panic(&errors.ValidationError{
+			Message:    "Sadece POST metoduna izin verilir",
+			StatusCode: http.StatusMethodNotAllowed,
+			Field:      "method",
+			Value:      r.Method,
+		})
 	}
 
 	var req struct {
 		Token string `json:"token"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Geçersiz JSON formatı", http.StatusBadRequest)
-		return
+		panic(&errors.ValidationError{
+			Message:    "Geçersiz JSON formatı",
+			StatusCode: http.StatusBadRequest,
+			Field:      "body",
+			Value:      err.Error(),
+		})
 	}
 
 	newToken, expiresIn, err := auth.RefreshToken(req.Token)
 	if err != nil {
 		log.Error().Err(err).Msg("Token refresh başarısız")
-		http.Error(w, err.Error(), http.StatusUnauthorized)
-		return
+		panic(&errors.AuthError{
+			Message:    err.Error(),
+			StatusCode: http.StatusUnauthorized,
+		})
 	}
 
 	response := models.RefreshResponse{
@@ -183,15 +234,21 @@ func (h *UserHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 func (h *UserHandler) GetAllUsers(w http.ResponseWriter, r *http.Request) {
 	// Sadece GET metoduna izin ver
 	if r.Method != http.MethodGet {
-		http.Error(w, "Sadece GET metoduna izin verilir", http.StatusMethodNotAllowed)
-		return
+		panic(&errors.ValidationError{
+			Message:    "Sadece GET metoduna izin verilir",
+			StatusCode: http.StatusMethodNotAllowed,
+			Field:      "method",
+			Value:      r.Method,
+		})
 	}
 
 	// Context'ten user bilgilerini al (authentication kontrolü)
 	_, ok := r.Context().Value(middleware.UserContextKey).(*auth.Claims)
 	if !ok {
-		http.Error(w, "Yetkilendirme hatası", http.StatusUnauthorized)
-		return
+		panic(&errors.AuthError{
+			Message:    "Yetkilendirme hatası",
+			StatusCode: http.StatusUnauthorized,
+		})
 	}
 
 	// Query parameters (pagination)
@@ -220,8 +277,12 @@ func (h *UserHandler) GetAllUsers(w http.ResponseWriter, r *http.Request) {
 	users, totalCount, err := h.userService.GetAllUsers(limit, offset)
 	if err != nil {
 		log.Error().Err(err).Msg("Kullanıcı listesi getirilemedi")
-		http.Error(w, "Kullanıcı listesi alınamadı", http.StatusInternalServerError)
-		return
+		panic(&errors.ValidationError{
+			Message:    "Kullanıcı listesi alınamadı",
+			StatusCode: http.StatusInternalServerError,
+			Field:      "users",
+			Value:      nil,
+		})
 	}
 
 	// Standardized success response
@@ -255,31 +316,45 @@ func (h *UserHandler) GetUserByID(w http.ResponseWriter, r *http.Request) {
 	// Context'ten user bilgilerini al (authentication kontrolü)
 	_, ok := r.Context().Value(middleware.UserContextKey).(*auth.Claims)
 	if !ok {
-		http.Error(w, "Yetkilendirme hatası", http.StatusUnauthorized)
-		return
+		panic(&errors.AuthError{
+			Message:    "Yetkilendirme hatası",
+			StatusCode: http.StatusUnauthorized,
+		})
 	}
 
 	// Gorilla Mux'tan URL parameter'ı al
 	vars := mux.Vars(r)
 	idStr, exists := vars["id"]
 	if !exists {
-		http.Error(w, "Kullanıcı ID parametresi gerekli", http.StatusBadRequest)
-		return
+		panic(&errors.ValidationError{
+			Message:    "Kullanıcı ID parametresi gerekli",
+			StatusCode: http.StatusBadRequest,
+			Field:      "id",
+			Value:      nil,
+		})
 	}
 
 	// ID'yi parse et
 	userID, err := strconv.Atoi(idStr)
 	if err != nil {
-		http.Error(w, "Geçersiz kullanıcı ID", http.StatusBadRequest)
-		return
+		panic(&errors.ValidationError{
+			Message:    "Geçersiz kullanıcı ID",
+			StatusCode: http.StatusBadRequest,
+			Field:      "id",
+			Value:      idStr,
+		})
 	}
 
 	// Kullanıcıyı getir
 	user, err := h.userService.GetUserByID(userID)
 	if err != nil {
 		log.Error().Err(err).Int("user_id", userID).Msg("Kullanıcı bulunamadı")
-		http.Error(w, "Kullanıcı bulunamadı", http.StatusNotFound)
-		return
+		panic(&errors.ValidationError{
+			Message:    "Kullanıcı bulunamadı",
+			StatusCode: http.StatusNotFound,
+			Field:      "user_id",
+			Value:      userID,
+		})
 	}
 
 	// Başarılı yanıt
@@ -301,30 +376,44 @@ func (h *UserHandler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 	// Context'ten user bilgilerini al
 	claims, ok := r.Context().Value(middleware.UserContextKey).(*auth.Claims)
 	if !ok {
-		http.Error(w, "Yetkilendirme hatası", http.StatusUnauthorized)
-		return
+		panic(&errors.AuthError{
+			Message:    "Yetkilendirme hatası",
+			StatusCode: http.StatusUnauthorized,
+		})
 	}
 
 	// Gorilla Mux'tan URL parameter'ı al
 	vars := mux.Vars(r)
 	idStr, exists := vars["id"]
 	if !exists {
-		http.Error(w, "Kullanıcı ID parametresi gerekli", http.StatusBadRequest)
-		return
+		panic(&errors.ValidationError{
+			Message:    "Kullanıcı ID parametresi gerekli",
+			StatusCode: http.StatusBadRequest,
+			Field:      "id",
+			Value:      nil,
+		})
 	}
 
 	// ID'yi parse et
 	targetUserID, err := strconv.Atoi(idStr)
 	if err != nil {
-		http.Error(w, "Geçersiz kullanıcı ID", http.StatusBadRequest)
-		return
+		panic(&errors.ValidationError{
+			Message:    "Geçersiz kullanıcı ID",
+			StatusCode: http.StatusBadRequest,
+			Field:      "id",
+			Value:      idStr,
+		})
 	}
 
 	// JSON'u parse et
 	var req models.UpdateUserRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Geçersiz JSON formatı", http.StatusBadRequest)
-		return
+		panic(&errors.ValidationError{
+			Message:    "Geçersiz JSON formatı",
+			StatusCode: http.StatusBadRequest,
+			Field:      "body",
+			Value:      err.Error(),
+		})
 	}
 
 	//  YENİ VALİDASYON KONTROLÜ
@@ -333,26 +422,38 @@ func (h *UserHandler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 			Err(err).
 			Int("user_id", targetUserID).
 			Msg(" Update validation hatası")
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+		panic(&errors.ValidationError{
+			Message:    err.Error(),
+			StatusCode: http.StatusBadRequest,
+			Field:      "validation",
+			Value:      req,
+		})
 	}
 
-	// Authorization: Sadece kendi hesabını güncelleyebilir
+	// Authorization: Sadece kendi hesabını güncelleyebilir (RBAC middleware'de kontrol edilir)
 	if claims.UserID != targetUserID {
 		log.Warn().
 			Int("requester_id", claims.UserID).
 			Int("target_id", targetUserID).
 			Msg(" Yetkisiz kullanıcı güncelleme denemesi")
-		http.Error(w, "Sadece kendi hesabınızı güncelleyebilirsiniz", http.StatusForbidden)
-		return
+		panic(&errors.RBACError{
+			Message:    "Sadece kendi hesabınızı güncelleyebilirsiniz",
+			StatusCode: http.StatusForbidden,
+			Resource:   "user",
+			Action:     "update",
+		})
 	}
 
 	// Güncelleme işlemini yap
 	updatedUser, err := h.userService.UpdateUser(targetUserID, &req)
 	if err != nil {
 		log.Error().Err(err).Int("user_id", targetUserID).Msg("Kullanıcı güncellenemedi")
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+		panic(&errors.ValidationError{
+			Message:    err.Error(),
+			StatusCode: http.StatusBadRequest,
+			Field:      "update",
+			Value:      targetUserID,
+		})
 	}
 
 	// Başarılı yanıt
@@ -377,41 +478,59 @@ func (h *UserHandler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 	// Context'ten user bilgilerini al
 	claims, ok := r.Context().Value(middleware.UserContextKey).(*auth.Claims)
 	if !ok {
-		http.Error(w, "Yetkilendirme hatası", http.StatusUnauthorized)
-		return
+		panic(&errors.AuthError{
+			Message:    "Yetkilendirme hatası",
+			StatusCode: http.StatusUnauthorized,
+		})
 	}
 
 	// Gorilla Mux'tan URL parameter'ı al
 	vars := mux.Vars(r)
 	idStr, exists := vars["id"]
 	if !exists {
-		http.Error(w, "Kullanıcı ID parametresi gerekli", http.StatusBadRequest)
-		return
+		panic(&errors.ValidationError{
+			Message:    "Kullanıcı ID parametresi gerekli",
+			StatusCode: http.StatusBadRequest,
+			Field:      "id",
+			Value:      nil,
+		})
 	}
 
 	// ID'yi parse et
 	targetUserID, err := strconv.Atoi(idStr)
 	if err != nil {
-		http.Error(w, "Geçersiz kullanıcı ID", http.StatusBadRequest)
-		return
+		panic(&errors.ValidationError{
+			Message:    "Geçersiz kullanıcı ID",
+			StatusCode: http.StatusBadRequest,
+			Field:      "id",
+			Value:      idStr,
+		})
 	}
 
-	// Authorization: Sadece kendi hesabını silebilir
+	// Authorization: Sadece kendi hesabını silebilir (RBAC middleware'de kontrol edilir)
 	if claims.UserID != targetUserID {
 		log.Warn().
 			Int("requester_id", claims.UserID).
 			Int("target_id", targetUserID).
 			Msg(" Yetkisiz kullanıcı silme denemesi")
-		http.Error(w, "Sadece kendi hesabınızı silebilirsiniz", http.StatusForbidden)
-		return
+		panic(&errors.RBACError{
+			Message:    "Sadece kendi hesabınızı silebilirsiniz",
+			StatusCode: http.StatusForbidden,
+			Resource:   "user",
+			Action:     "delete",
+		})
 	}
 
 	// Silme işlemini yap
 	err = h.userService.DeleteUser(targetUserID)
 	if err != nil {
 		log.Error().Err(err).Int("user_id", targetUserID).Msg("Kullanıcı silinemedi")
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+		panic(&errors.ValidationError{
+			Message:    err.Error(),
+			StatusCode: http.StatusBadRequest,
+			Field:      "delete",
+			Value:      targetUserID,
+		})
 	}
 
 	// Başarılı yanıt
@@ -428,4 +547,136 @@ func (h *UserHandler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 		Int("user_id", targetUserID).
 		Str("deleted_by", claims.Email).
 		Msg(" Kullanıcı silindi (soft delete)")
+}
+
+// PromoteToMod kullanıcıyı moderator yapma endpoint'i (sadece admin)
+func (h *UserHandler) PromoteToMod(w http.ResponseWriter, r *http.Request) {
+	// Context'ten admin user bilgilerini al
+	claims, ok := r.Context().Value(middleware.UserContextKey).(*auth.Claims)
+	if !ok {
+		panic(&errors.AuthError{
+			Message:    "Yetkilendirme hatası",
+			StatusCode: http.StatusUnauthorized,
+		})
+	}
+
+	// Gorilla Mux'tan URL parameter'ı al
+	vars := mux.Vars(r)
+	idStr, exists := vars["id"]
+	if !exists {
+		panic(&errors.ValidationError{
+			Message:    "Kullanıcı ID parametresi gerekli",
+			StatusCode: http.StatusBadRequest,
+			Field:      "id",
+			Value:      nil,
+		})
+	}
+
+	// ID'yi parse et
+	targetUserID, err := strconv.Atoi(idStr)
+	if err != nil {
+		panic(&errors.ValidationError{
+			Message:    "Geçersiz kullanıcı ID",
+			StatusCode: http.StatusBadRequest,
+			Field:      "id",
+			Value:      idStr,
+		})
+	}
+
+	// Promote işlemini yap
+	err = h.userService.PromoteUserToMod(claims.UserID, targetUserID)
+	if err != nil {
+		log.Error().Err(err).Int("target_user_id", targetUserID).Msg("Moderator promotion başarısız")
+		panic(&errors.ValidationError{
+			Message:    err.Error(),
+			StatusCode: http.StatusBadRequest,
+			Field:      "promotion",
+			Value:      targetUserID,
+		})
+	}
+
+	// Başarılı yanıt
+	response := map[string]interface{}{
+		"success": true,
+		"message": "Kullanıcı başarıyla moderator yapıldı",
+		"data": map[string]interface{}{
+			"user_id":  targetUserID,
+			"new_role": "mod",
+		},
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
+
+	log.Info().
+		Int("admin_user_id", claims.UserID).
+		Int("target_user_id", targetUserID).
+		Msg("Kullanıcı moderator yapıldı")
+}
+
+// DemoteUser kullanıcıyı user yapma endpoint'i (sadece admin)
+func (h *UserHandler) DemoteUser(w http.ResponseWriter, r *http.Request) {
+	// Context'ten admin user bilgilerini al
+	claims, ok := r.Context().Value(middleware.UserContextKey).(*auth.Claims)
+	if !ok {
+		panic(&errors.AuthError{
+			Message:    "Yetkilendirme hatası",
+			StatusCode: http.StatusUnauthorized,
+		})
+	}
+
+	// Gorilla Mux'tan URL parameter'ı al
+	vars := mux.Vars(r)
+	idStr, exists := vars["id"]
+	if !exists {
+		panic(&errors.ValidationError{
+			Message:    "Kullanıcı ID parametresi gerekli",
+			StatusCode: http.StatusBadRequest,
+			Field:      "id",
+			Value:      nil,
+		})
+	}
+
+	// ID'yi parse et
+	targetUserID, err := strconv.Atoi(idStr)
+	if err != nil {
+		panic(&errors.ValidationError{
+			Message:    "Geçersiz kullanıcı ID",
+			StatusCode: http.StatusBadRequest,
+			Field:      "id",
+			Value:      idStr,
+		})
+	}
+
+	// Demote işlemini yap
+	err = h.userService.DemoteUser(claims.UserID, targetUserID)
+	if err != nil {
+		log.Error().Err(err).Int("target_user_id", targetUserID).Msg("User demotion başarısız")
+		panic(&errors.ValidationError{
+			Message:    err.Error(),
+			StatusCode: http.StatusBadRequest,
+			Field:      "demotion",
+			Value:      targetUserID,
+		})
+	}
+
+	// Başarılı yanıt
+	response := map[string]interface{}{
+		"success": true,
+		"message": "Kullanıcı başarıyla user yapıldı",
+		"data": map[string]interface{}{
+			"user_id":  targetUserID,
+			"new_role": "user",
+		},
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
+
+	log.Info().
+		Int("admin_user_id", claims.UserID).
+		Int("target_user_id", targetUserID).
+		Msg("Kullanıcı user yapıldı")
 }

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/onerilhan/go-payment-api/internal/auth"
+	"github.com/onerilhan/go-payment-api/internal/middleware/errors"
 	"github.com/rs/zerolog/log"
 )
 
@@ -24,8 +25,12 @@ func AuthMiddleware(next http.Handler) http.Handler {
 				Str("path", r.URL.Path).
 				Str("method", r.Method).
 				Msg("Authorization header eksik")
-			http.Error(w, "Authorization header gerekli", http.StatusUnauthorized)
-			return
+
+			// Error middleware'in yakalayacağı şekilde panic at
+			panic(&errors.AuthError{
+				Message:    "Authorization header gerekli",
+				StatusCode: http.StatusUnauthorized,
+			})
 		}
 
 		// "Bearer " prefix'ini kontrol et
@@ -33,10 +38,14 @@ func AuthMiddleware(next http.Handler) http.Handler {
 		if len(tokenParts) != 2 || tokenParts[0] != "Bearer" {
 			log.Warn().
 				Str("path", r.URL.Path).
-				Str("auth_header", authHeader).
+				Str("auth_header", maskAuthHeader(authHeader)).
 				Msg("Geçersiz Authorization format")
-			http.Error(w, "Authorization format: 'Bearer <token>'", http.StatusUnauthorized)
-			return
+
+			// Error middleware'in yakalayacağı şekilde panic at
+			panic(&errors.AuthError{
+				Message:    "Authorization format: 'Bearer <token>'",
+				StatusCode: http.StatusUnauthorized,
+			})
 		}
 
 		// Token'ı al
@@ -49,8 +58,12 @@ func AuthMiddleware(next http.Handler) http.Handler {
 				Err(err).
 				Str("path", r.URL.Path).
 				Msg("Token doğrulama başarısız")
-			http.Error(w, "Geçersiz token", http.StatusUnauthorized)
-			return
+
+			// Error middleware'in yakalayacağı şekilde panic at
+			panic(&errors.AuthError{
+				Message:    "Geçersiz token",
+				StatusCode: http.StatusUnauthorized,
+			})
 		}
 
 		// User bilgilerini context'e ekle
@@ -60,11 +73,20 @@ func AuthMiddleware(next http.Handler) http.Handler {
 		log.Debug().
 			Int("user_id", claims.UserID).
 			Str("email", claims.Email).
+			Str("role", claims.Role).
 			Str("path", r.URL.Path).
 			Str("method", r.Method).
-			Msg("🔐 Authentication successful")
+			Msg("Authentication successful")
 
 		// Sonraki handler'a geç
 		next.ServeHTTP(w, r)
 	})
+}
+
+// maskAuthHeader auth header'ı log için maskler (security)
+func maskAuthHeader(header string) string {
+	if len(header) <= 10 {
+		return "Bearer ***"
+	}
+	return header[:10] + "***"
 }

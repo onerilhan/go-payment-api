@@ -16,11 +16,12 @@ var jwtSecret = []byte("your-secret-key-change-this-in-production")
 type Claims struct {
 	UserID int    `json:"user_id"`
 	Email  string `json:"email"`
+	Role   string `json:"role"` // RBAC için role eklendi
 	jwt.RegisteredClaims
 }
 
 // GenerateToken kullanıcı için JWT token oluşturur
-func GenerateToken(userID int, email string) (string, error) {
+func GenerateToken(userID int, email string, role string) (string, error) {
 	// Token 24 saat geçerli olacak
 	expirationTime := time.Now().Add(24 * time.Hour)
 
@@ -28,6 +29,7 @@ func GenerateToken(userID int, email string) (string, error) {
 	claims := &Claims{
 		UserID: userID,
 		Email:  email,
+		Role:   role, // Role'u JWT'ye ekle
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(expirationTime),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
@@ -98,15 +100,15 @@ func RefreshToken(tokenString string) (string, int64, error) {
 			return "", 0, fmt.Errorf("token claims alınamadı")
 		}
 
-		// Yeni token oluştur
-		newToken, genErr := GenerateToken(claims.UserID, claims.Email)
+		// Yeni token oluştur (role'u da dahil et)
+		newToken, genErr := GenerateToken(claims.UserID, claims.Email, claims.Role)
 		if genErr != nil {
 			log.Error().Err(genErr).Msg("Yeni token oluşturulamadı")
 			return "", 0, fmt.Errorf("yeni token oluşturulamadı: %w", genErr)
 		}
 
 		expiresIn := int64(24 * 60 * 60) // 24 saat
-		log.Info().Int("user_id", claims.UserID).Msg("Token başarıyla refresh edildi")
+		log.Info().Int("user_id", claims.UserID).Str("role", claims.Role).Msg("Token başarıyla refresh edildi")
 		return newToken, expiresIn, nil
 	}
 

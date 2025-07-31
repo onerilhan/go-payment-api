@@ -24,16 +24,17 @@ func NewUserRepository(db *sql.DB) *UserRepository {
 // Create yeni kullanıcı oluşturur
 func (r *UserRepository) Create(user *models.CreateUserRequest) (*models.User, error) {
 	query := `
-		INSERT INTO users (name, email, password) 
-		VALUES ($1, $2, $3) 
-		RETURNING id, name, email, created_at
+		INSERT INTO users (name, email, password, role) 
+		VALUES ($1, $2, $3, $4) 
+		RETURNING id, name, email, role, created_at
 	`
 
 	var result models.User
-	err := r.db.QueryRow(query, user.Name, user.Email, user.Password).Scan(
+	err := r.db.QueryRow(query, user.Name, user.Email, user.Password, user.Role).Scan(
 		&result.ID,
 		&result.Name,
 		&result.Email,
+		&result.Role,
 		&result.CreatedAt,
 	)
 
@@ -47,9 +48,9 @@ func (r *UserRepository) Create(user *models.CreateUserRequest) (*models.User, e
 // GetByEmail email ile kullanıcı bulur
 func (r *UserRepository) GetByEmail(email string) (*models.User, error) {
 	query := `
-		SELECT id, name, email, password, created_at 
+		SELECT id, name, email, password, role, created_at 
 		FROM users 
-		WHERE email = $1
+		WHERE email = $1 AND deleted_at IS NULL
 	`
 
 	var user models.User
@@ -58,6 +59,7 @@ func (r *UserRepository) GetByEmail(email string) (*models.User, error) {
 		&user.Name,
 		&user.Email,
 		&user.Password,
+		&user.Role,
 		&user.CreatedAt,
 	)
 
@@ -74,9 +76,9 @@ func (r *UserRepository) GetByEmail(email string) (*models.User, error) {
 // GetByID ID ile kullanıcı bulur
 func (r *UserRepository) GetByID(id int) (*models.User, error) {
 	query := `
-		SELECT id, name, email, created_at 
+		SELECT id, name, email, role, created_at 
 		FROM users 
-		WHERE id = $1
+		WHERE id = $1 AND deleted_at IS NULL
 	`
 
 	var user models.User
@@ -84,6 +86,7 @@ func (r *UserRepository) GetByID(id int) (*models.User, error) {
 		&user.ID,
 		&user.Name,
 		&user.Email,
+		&user.Role,
 		&user.CreatedAt,
 	)
 
@@ -130,6 +133,13 @@ func (r *UserRepository) Update(id int, req *models.UpdateUserRequest) (*models.
 		argIndex++
 	}
 
+	// Role güncellenmeli mi?
+	if req.Role != nil {
+		setParts = append(setParts, fmt.Sprintf("role = $%d", argIndex))
+		args = append(args, *req.Role)
+		argIndex++
+	}
+
 	// Hiçbir field gönderilmemişse hata
 	if len(setParts) == 0 {
 		return nil, fmt.Errorf("güncellenecek alan bulunamadı")
@@ -147,8 +157,8 @@ func (r *UserRepository) Update(id int, req *models.UpdateUserRequest) (*models.
 	query := fmt.Sprintf(`
 		UPDATE users 
 		SET %s
-		WHERE id = $%d
-		RETURNING id, name, email, created_at
+		WHERE id = $%d AND deleted_at IS NULL
+		RETURNING id, name, email, role, created_at
 	`, strings.Join(setParts, ", "), argIndex)
 
 	// Query'yi çalıştır
@@ -157,6 +167,7 @@ func (r *UserRepository) Update(id int, req *models.UpdateUserRequest) (*models.
 		&user.ID,
 		&user.Name,
 		&user.Email,
+		&user.Role,
 		&user.CreatedAt,
 	)
 
@@ -207,7 +218,7 @@ func (r *UserRepository) GetAll(limit, offset int) ([]*models.User, int, error) 
 
 	// Kullanıcıları al
 	query := `
-		SELECT id, name, email, created_at
+		SELECT id, name, email, role, created_at
 		FROM users 
 		WHERE deleted_at IS NULL
 		ORDER BY created_at DESC
@@ -227,6 +238,7 @@ func (r *UserRepository) GetAll(limit, offset int) ([]*models.User, int, error) 
 			&user.ID,
 			&user.Name,
 			&user.Email,
+			&user.Role,
 			&user.CreatedAt,
 		)
 		if err != nil {

@@ -28,6 +28,20 @@ func (s *UserService) Register(req *models.CreateUserRequest) (*models.User, err
 		return nil, fmt.Errorf("bu email zaten kullanılıyor")
 	}
 
+	// GÜVENLIK: Role assignment kontrolü
+	// Sadece admin ve mod rolleri özel izin gerektirir
+	if req.Role == "admin" || req.Role == "mod" {
+		return nil, fmt.Errorf("admin ve moderator hesapları sadece sistem yöneticisi tarafından oluşturulabilir")
+	}
+
+	// Geçerli role kontrolü ve default assignment
+	if req.Role == "" || req.Role == "user" {
+		req.Role = "user" // Default role
+	} else {
+		// Geçersiz role girişi
+		return nil, fmt.Errorf("geçersiz rol: %s. Sadece 'user' rolü ile kayıt olabilirsiniz", req.Role)
+	}
+
 	// Şifreyi hashle
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
@@ -42,6 +56,9 @@ func (s *UserService) Register(req *models.CreateUserRequest) (*models.User, err
 	if err != nil {
 		return nil, fmt.Errorf("kullanıcı oluşturulamadı: %w", err)
 	}
+
+	// Role'u set et
+	user.Role = req.Role
 
 	return user, nil
 }
@@ -60,8 +77,8 @@ func (s *UserService) Login(req *models.LoginRequest) (*models.LoginResponse, er
 		return nil, fmt.Errorf("email veya şifre hatalı")
 	}
 
-	// JWT token oluştur
-	token, err := auth.GenerateToken(user.ID, user.Email)
+	// JWT token oluştur (role'u da dahil et)
+	token, err := auth.GenerateToken(user.ID, user.Email, user.Role)
 	if err != nil {
 		return nil, fmt.Errorf("token oluşturulamadı: %w", err)
 	}
@@ -73,6 +90,94 @@ func (s *UserService) Login(req *models.LoginRequest) (*models.LoginResponse, er
 	}
 
 	return response, nil
+}
+
+// CreateAdminUser sadece sistem tarafından admin user oluşturur (direct database call)
+func (s *UserService) CreateAdminUser(req *models.CreateUserRequest) (*models.User, error) {
+	// Email zaten var mı kontrol et
+	existingUser, _ := s.userRepo.GetByEmail(req.Email)
+	if existingUser != nil {
+		return nil, fmt.Errorf("bu email zaten kullanılıyor")
+	}
+
+	// Role'u admin olarak force et
+	req.Role = "admin"
+
+	// Şifreyi hashle
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	if err != nil {
+		return nil, fmt.Errorf("şifre hashlenemedi: %w", err)
+	}
+
+	req.Password = string(hashedPassword)
+
+	// Admin kullanıcıyı oluştur
+	user, err := s.userRepo.Create(req)
+	if err != nil {
+		return nil, fmt.Errorf("admin kullanıcı oluşturulamadı: %w", err)
+	}
+
+	user.Role = "admin"
+	return user, nil
+}
+
+// PromoteUserToMod bir user'ı moderator yapar (sadece admin yapabilir)
+func (s *UserService) PromoteUserToMod(adminUserID, targetUserID int) error {
+	// Admin kontrolü burada yapılmayacak, RBAC middleware'de yapılacak
+
+	// Target user'ı bul
+	targetUser, err := s.userRepo.GetByID(targetUserID)
+	if err != nil {
+		return fmt.Errorf("kullanıcı bulunamadı: %w", err)
+	}
+
+	// Zaten admin ise promote etme
+	if targetUser.Role == "admin" {
+		return fmt.Errorf("admin kullanıcılar moderator yapılamaz")
+	}
+
+	// Role'u mod olarak güncelle
+	updateReq := &models.UpdateUserRequest{
+		Role: stringPtr("mod"),
+	}
+
+	_, err = s.userRepo.Update(targetUserID, updateReq)
+	if err != nil {
+		return fmt.Errorf("kullanıcı moderator yapılamadı: %w", err)
+	}
+
+	return nil
+}
+
+// DemoteUser bir mod/admin'i user yapar (sadece admin yapabilir)
+func (s *UserService) DemoteUser(adminUserID, targetUserID int) error {
+	// Target user'ı bul
+	targetUser, err := s.userRepo.GetByID(targetUserID)
+	if err != nil {
+		return fmt.Errorf("kullanıcı bulunamadı: %w", err)
+	}
+
+	// Self-demotion kontrolü
+	if adminUserID == targetUserID {
+		return fmt.Errorf("kendi rolünüzü düşüremezsiniz")
+	}
+
+	// Zaten user ise demote etme (isteğe bağlı kontrol)
+	if targetUser.Role == "user" {
+		return fmt.Errorf("kullanici zaten user rolunde")
+	}
+
+	// Role'u user olarak güncelle
+	updateReq := &models.UpdateUserRequest{
+		Role: stringPtr("user"),
+	}
+
+	_, err = s.userRepo.Update(targetUserID, updateReq)
+	if err != nil {
+		return fmt.Errorf("kullanıcı rolü güncellenemedi: %w", err)
+	}
+
+	return nil
 }
 
 // GetUserByID ID ile kullanıcı getirir
@@ -87,7 +192,7 @@ func (s *UserService) GetUserByID(userID int) (*models.User, error) {
 // UpdateUser kullanıcı bilgilerini günceller
 func (s *UserService) UpdateUser(userID int, req *models.UpdateUserRequest) (*models.User, error) {
 	// En az bir field gönderilmiş mi?
-	if req.Name == nil && req.Email == nil && req.Password == nil {
+	if req.Name == nil && req.Email == nil && req.Password == nil && req.Role == nil {
 		return nil, fmt.Errorf("güncellenecek en az bir alan belirtilmeli")
 	}
 
@@ -136,4 +241,9 @@ func (s *UserService) GetAllUsers(limit, offset int) ([]*models.User, int, error
 	}
 
 	return users, totalCount, nil
+}
+
+// stringPtr helper function for string pointer
+func stringPtr(s string) *string {
+	return &s
 }
