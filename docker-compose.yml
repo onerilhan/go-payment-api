@@ -1,6 +1,36 @@
 version: '3.8'
 
 services:
+  # Application Service
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BUILD_ENV: development
+    container_name: payment-api
+    restart: always
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env.development
+    depends_on:
+      - db
+      - redis
+    networks:
+      - payment-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    volumes:
+      # Development: live reload için source mount (opsiyonel)
+      # - ./:/app:ro
+      - app_logs:/app/logs
+
+  # Database Service (existing - enhanced)
   db:
     image: postgres:15
     container_name: payment-db
@@ -9,11 +39,41 @@ services:
       POSTGRES_USER: ilhan
       POSTGRES_PASSWORD: password
       POSTGRES_DB: paymentdb
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --lc-collate=C --lc-ctype=C"
     ports:
       - "5432:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    networks:
+      - payment-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ilhan -d paymentdb"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
+  # Redis Cache Service
+  redis:
+    image: redis:7-alpine
+    container_name: payment-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    networks:
+      - payment-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # PgAdmin Service (existing - enhanced)
   pgadmin:
     image: dpage/pgadmin4
     container_name: payment-pgadmin
@@ -21,8 +81,43 @@ services:
     environment:
       PGADMIN_DEFAULT_EMAIL: admin@admin.com
       PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
     ports:
       - "5050:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    networks:
+      - payment-network
+    depends_on:
+      - db
 
+  # Redis Commander (Redis GUI)
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: payment-redis-commander
+    restart: unless-stopped
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    ports:
+      - "8081:8081"
+    networks:
+      - payment-network
+    depends_on:
+      - redis
+
+# Networks
+networks:
+  payment-network:
+    driver: bridge
+    name: payment-network
+
+# Volumes
 volumes:
   db_data:
+    name: payment_db_data
+  redis_data:
+    name: payment_redis_data
+  pgadmin_data:
+    name: payment_pgadmin_data
+  app_logs:
+    name: payment_app_logs

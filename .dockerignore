@@ -1,0 +1,78 @@
+# Git
+.git
+.gitignore
+
+# Documentation
+README.md
+*.md
+
+# Docker files
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# IDE files
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Build artifacts
+main
+*.exe
+*.dll
+*.so
+*.dylib
+bin/
+build/
+
+# Test files
+*_test.go
+test/
+coverage.out
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+/cache
+
+# Dependencies (will be downloaded in container)
+vendor/
+
+# Go mod backup files
+go.sum.backup
+
+# Environment files (will be copied separately in specific layers)
+.env.local
+.env.development
+.env.staging
+.env.production
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Node modules (if any frontend)
+node_modules/
+npm-debug.log*
+
+# Monitoring and deployment
+monitoring/
+k8s/
+helm/
