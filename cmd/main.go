@@ -20,6 +20,7 @@ import (
 	"github.com/onerilhan/go-payment-api/internal/logger"
 	"github.com/onerilhan/go-payment-api/internal/middleware"
 	"github.com/onerilhan/go-payment-api/internal/middleware/errors"
+	"github.com/onerilhan/go-payment-api/internal/middleware/validation"
 	"github.com/onerilhan/go-payment-api/internal/models"
 	"github.com/onerilhan/go-payment-api/internal/repository"
 	"github.com/onerilhan/go-payment-api/internal/services"
@@ -73,8 +74,12 @@ func main() {
 	balanceHandler := handlers.NewBalanceHandler(balanceService)
 	transactionHandler := handlers.NewTransactionHandler(transactionService, transactionQueue, balanceService)
 
+	// Global context (metrics gibi background goroutine'leri durdurmak için)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	// Gorilla Mux Router Setup
-	router := setupRouter(userHandler, balanceHandler, transactionHandler, cfg.AppEnv, userService)
+	router := setupRouter(userHandler, balanceHandler, transactionHandler, cfg.AppEnv, userService, ctx)
 
 	// HTTP Server configuration
 	serverAddr := ":" + cfg.Port
@@ -118,6 +123,8 @@ func main() {
 
 		// Graceful shutdown sequence başlat
 		performGracefulShutdown(server, transactionQueue)
+		// Global context'i de iptal et (metrics'in arka plan goroutine'i durur)
+		cancel()
 	}
 }
 
@@ -183,29 +190,49 @@ func performGracefulShutdown(server *http.Server, transactionQueue *services.Tra
 }
 
 // setupRouter Gorilla Mux router'ını ayarlar
-func setupRouter(userHandler *handlers.UserHandler, balanceHandler *handlers.BalanceHandler, transactionHandler *handlers.TransactionHandler, appEnv string, userService *services.UserService) *mux.Router {
+func setupRouter(userHandler *handlers.UserHandler, balanceHandler *handlers.BalanceHandler, transactionHandler *handlers.TransactionHandler, appEnv string, userService *services.UserService, ctx context.Context) *mux.Router {
 	router := mux.NewRouter()
 
 	// MIDDLEWARE CHAIN SIRASI (önemli!)
 	// Request → Error → CORS → Logging → Security → RateLimit → Auth → Handler
 
-	// 1. Error Handling Middleware (en dışta - panic recovery için)
+	//  Error Handling Middleware (en dışta - panic recovery için)
 	if appEnv == "development" {
 		router.Use(middleware.ErrorHandlingMiddlewareForDevelopment())
 	} else {
 		router.Use(middleware.ErrorHandlingMiddlewareForProduction())
 	}
 
-	// 2. CORS middleware
+	// Validation middleware
+	if appEnv == "development" {
+		// Development: Detaylı hata mesajları
+		config := validation.DefaultConfig()
+		config.PathValidation = map[string]string{
+			"id":      "positive_integer",
+			"user_id": "positive_integer",
+		}
+		config.RequireNonEmptyJSON = true
+		router.Use(validation.Middleware(config))
+	} else {
+		// Production: Strict validation
+		router.Use(validation.Middleware(validation.StrictConfig()))
+	}
+	// 3. Metrics middleware (Response time, memory, request count, vb.)
+	metricsMW, metricsHandler := middleware.NewMetricsMiddleware(ctx, middleware.DefaultMetricsConfig())
+	router.Use(metricsMW)
+	// Metrics endpoint
+	router.HandleFunc("/metrics", metricsHandler).Methods("GET")
+
+	// CORS middleware
 	router.Use(middleware.CORSMiddlewareWithDefaults())
 
-	// 3. Logger middleware
+	// Logger middleware
 	router.Use(middleware.RequestLoggingMiddlewareWithDefaults())
 
-	// 4. Security headers middleware
+	// Security headers middleware
 	router.Use(middleware.SecurityHeadersMiddlewareWithDefaults())
 
-	// 5. Rate limit middleware
+	// Rate limit middleware
 	router.Use(middleware.RateLimitMiddlewareWithDefaults())
 
 	// Global OPTIONS handler
@@ -260,8 +287,8 @@ func setupRouter(userHandler *handlers.UserHandler, balanceHandler *handlers.Bal
 			adminReq := &models.CreateUserRequest{
 				Name:            "System Admin",
 				Email:           "admin@system.com",
-				Password:        "admin123456",
-				ConfirmPassword: "admin123456",
+				Password:        "Admin123!",
+				ConfirmPassword: "Admin123!",
 				Role:            "admin",
 			}
 
