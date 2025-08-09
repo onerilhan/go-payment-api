@@ -30,7 +30,7 @@ func DefaultConfig() *Config {
 		MaxParamSize:    2048,        // 2KB per parameter
 		RequiredHeaders: []string{},
 		AllowedMethods: []string{
-			"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH",
+			"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "HEAD",
 		},
 		ContentTypes: []string{
 			"application/json",

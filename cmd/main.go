@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"fmt"
 	stdlog "log"
 	"net/http"
 	"os"
@@ -21,6 +23,7 @@ import (
 	"github.com/onerilhan/go-payment-api/internal/middleware"
 	"github.com/onerilhan/go-payment-api/internal/middleware/errors"
 	"github.com/onerilhan/go-payment-api/internal/middleware/validation"
+	"github.com/onerilhan/go-payment-api/internal/migration"
 	"github.com/onerilhan/go-payment-api/internal/models"
 	"github.com/onerilhan/go-payment-api/internal/repository"
 	"github.com/onerilhan/go-payment-api/internal/services"
@@ -56,6 +59,16 @@ func main() {
 			log.Info().Msg("Database başarıyla kapatıldı")
 		}
 	}()
+	// DEBUG: Migration çağrısından önce
+	log.Info().Msg("DEBUG: Migration runner başlatılıyor...")
+
+	// Migration Runner - Environment-aware policy
+	if err := runStartupMigrations(database, cfg.AppEnv); err != nil {
+		log.Fatal().Err(err).Msg("Migration başarısız")
+	}
+
+	// DEBUG: Migration çağrısından sonra
+	log.Info().Msg("DEBUG: Migration runner tamamlandı")
 
 	// Repository, Service, Handler katmanları
 	userRepo := repository.NewUserRepository(database)
@@ -79,7 +92,7 @@ func main() {
 	defer cancel()
 
 	// Gorilla Mux Router Setup
-	router := setupRouter(userHandler, balanceHandler, transactionHandler, cfg.AppEnv, userService, ctx)
+	router := setupRouter(userHandler, balanceHandler, transactionHandler, cfg.AppEnv, userService, ctx, database)
 
 	// HTTP Server configuration
 	serverAddr := ":" + cfg.Port
@@ -190,7 +203,7 @@ func performGracefulShutdown(server *http.Server, transactionQueue *services.Tra
 }
 
 // setupRouter Gorilla Mux router'ını ayarlar
-func setupRouter(userHandler *handlers.UserHandler, balanceHandler *handlers.BalanceHandler, transactionHandler *handlers.TransactionHandler, appEnv string, userService *services.UserService, ctx context.Context) *mux.Router {
+func setupRouter(userHandler *handlers.UserHandler, balanceHandler *handlers.BalanceHandler, transactionHandler *handlers.TransactionHandler, appEnv string, userService *services.UserService, ctx context.Context, database *sql.DB) *mux.Router {
 	router := mux.NewRouter()
 
 	// MIDDLEWARE CHAIN SIRASI (önemli!)
@@ -241,17 +254,7 @@ func setupRouter(userHandler *handlers.UserHandler, balanceHandler *handlers.Bal
 	})
 
 	// Health check endpoint
-	router.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		// HEAD isteğinde body yazma, sadece 200 dön
-		if r.Method == http.MethodHead {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"healthy","timestamp":"` + time.Now().Format(time.RFC3339) + `"}`))
-	}).Methods(http.MethodGet, http.MethodHead)
+	router.HandleFunc("/health", getHealthHandler(database)).Methods(http.MethodGet, http.MethodHead)
 
 	// Development test endpoints
 	if appEnv == "development" {
@@ -392,4 +395,169 @@ func setupRouter(userHandler *handlers.UserHandler, balanceHandler *handlers.Bal
 	}
 
 	return router
+}
+
+// runStartupMigrations startup'ta migration policy'si uygular
+func runStartupMigrations(database *sql.DB, appEnv string) error {
+	log.Info().Str("environment", appEnv).Msg("Migration policy kontrol ediliyor...")
+
+	// Environment'a göre migration config seç
+	var config *migration.MigrationConfig
+	switch appEnv {
+	case "development":
+		config = migration.DevelopmentConfig()
+		config.Verbose = true
+	case "staging":
+		config = migration.AppStartupConfig()
+		config.Verbose = true
+	case "production":
+		config = migration.ProductionConfig()
+		config.Verbose = false
+	default:
+		config = migration.DefaultConfig()
+	}
+
+	// Migration runner oluştur
+	runner := migration.NewRunner(database, config)
+	defer runner.Close()
+
+	// Initialize migration system
+	if err := runner.Initialize(); err != nil {
+		return fmt.Errorf("migration sistem initialize hatası: %w", err)
+	}
+
+	if appEnv == "production" {
+		// Production: Sadece status check
+		return checkMigrationStatus(runner)
+	} else {
+		// Development/Staging: Auto-migrate
+		return autoMigrate(runner)
+	}
+}
+
+// checkMigrationStatus production'da migration durumunu kontrol eder
+func checkMigrationStatus(runner *migration.Runner) error {
+	status, err := runner.GetStatus()
+	if err != nil {
+		return fmt.Errorf("migration status alınamadı: %w", err)
+	}
+
+	if status.PendingCount > 0 {
+		log.Warn().
+			Int("pending_count", status.PendingCount).
+			Int64("current_version", status.CurrentVersion).
+			Msg("  PRODUCTION WARNING: Pending migration'lar var!")
+
+		log.Warn().Msg(" Production'da manuel migration çalıştırın:")
+		log.Warn().Msg("   go run cmd/migrate/main.go status")
+		log.Warn().Msg("   go run cmd/migrate/main.go up")
+
+		// Production'da pending migration olsa da app'i başlat
+		return nil
+	}
+
+	log.Info().
+		Int("applied_count", status.AppliedCount).
+		Int64("current_version", status.CurrentVersion).
+		Msg(" Migration durumu: Güncel")
+
+	return nil
+}
+
+// autoMigrate development/staging'da otomatik migration çalıştırır
+func autoMigrate(runner *migration.Runner) error {
+	log.Info().Msg("🔄 Otomatik migration kontrol ediliyor...")
+
+	// Pending migration'ları çalıştır
+	results, err := runner.RunUp(0) // 0 = tüm pending'leri çalıştır
+	if err != nil {
+		return fmt.Errorf("auto-migration başarısız: %w", err)
+	}
+
+	if len(results) == 0 {
+		log.Info().Msg(" Tüm migration'lar güncel")
+		return nil
+	}
+
+	// Sonuçları raporla
+	successCount := 0
+	for _, result := range results {
+		if result.Success {
+			successCount++
+			log.Info().
+				Int64("version", result.Version).
+				Str("name", result.Name).
+				Dur("duration", result.ExecutionTime).
+				Msg(" Migration uygulandı")
+		} else {
+			log.Error().
+				Int64("version", result.Version).
+				Str("name", result.Name).
+				Str("error", result.Error).
+				Msg(" Migration başarısız")
+		}
+	}
+
+	if successCount == len(results) {
+		log.Info().
+			Int("applied_count", successCount).
+			Msg(" Tüm migration'lar başarıyla uygulandı")
+		return nil
+	}
+
+	return fmt.Errorf("migration başarısız: %d/%d başarılı", successCount, len(results))
+}
+
+// getHealthHandler migration status içeren health check handler döner
+func getHealthHandler(database *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// HEAD isteğinde body yazma, sadece 200 dön
+		if r.Method == http.MethodHead {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		// Base health response
+		response := map[string]interface{}{
+			"status":    "healthy",
+			"timestamp": time.Now().Format(time.RFC3339),
+		}
+
+		// Migration status ekle
+		migrationStatus := getMigrationStatus(database)
+		if migrationStatus != nil {
+			response["migration"] = migrationStatus
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(response)
+	}
+}
+
+// getMigrationStatus migration durumunu döner
+func getMigrationStatus(database *sql.DB) map[string]interface{} {
+	// Migration runner oluştur (lightweight config)
+	config := migration.DefaultConfig()
+	config.Verbose = false
+
+	runner := migration.NewRunner(database, config)
+	defer runner.Close()
+
+	// Status al
+	status, err := runner.GetStatus()
+	if err != nil {
+		return map[string]interface{}{
+			"status": "error",
+			"error":  "Migration status alınamadı",
+		}
+	}
+
+	return map[string]interface{}{
+		"current_version": status.CurrentVersion,
+		"applied_count":   status.AppliedCount,
+		"pending_count":   status.PendingCount,
+		"status":          status.SystemHealth,
+		"checksum_valid":  status.ChecksumValid,
+	}
 }

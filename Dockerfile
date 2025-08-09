@@ -49,6 +49,9 @@ COPY --from=builder /etc/passwd /etc/passwd
 # Copy the binary
 COPY --from=builder /app/main /app/main
 
+# Copy migrations (YENİ SATIR)
+COPY --from=builder /app/migrations /app/migrations
+
 # Copy .env files (if exist)
 COPY --from=builder /app/.env* /app/
 
