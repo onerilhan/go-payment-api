@@ -242,10 +242,16 @@ func setupRouter(userHandler *handlers.UserHandler, balanceHandler *handlers.Bal
 
 	// Health check endpoint
 	router.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		// HEAD isteğinde body yazma, sadece 200 dön
+		if r.Method == http.MethodHead {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"healthy","timestamp":"` + time.Now().Format(time.RFC3339) + `"}`))
-	}).Methods("GET")
+		_, _ = w.Write([]byte(`{"status":"healthy","timestamp":"` + time.Now().Format(time.RFC3339) + `"}`))
+	}).Methods(http.MethodGet, http.MethodHead)
 
 	// Development test endpoints
 	if appEnv == "development" {

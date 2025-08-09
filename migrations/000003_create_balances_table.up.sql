@@ -14,9 +14,11 @@ BEGIN
     NEW.last_updated_at = CURRENT_TIMESTAMP;
     RETURN NEW;
 END;
-$$ language 'plpgsql';
+$$ LANGUAGE plpgsql;
 
 CREATE TRIGGER update_balance_timestamp
     BEFORE UPDATE ON balances
     FOR EACH ROW
     EXECUTE FUNCTION update_balance_timestamp();
+
+CREATE INDEX IF NOT EXISTS idx_balances_last_updated ON balances(last_updated_at)

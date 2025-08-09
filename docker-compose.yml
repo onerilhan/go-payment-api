@@ -1,7 +1,4 @@
-version: '3.8'
-
 services:
-  # Application Service
   app:
     build:
       context: .
@@ -15,8 +12,10 @@ services:
     env_file:
       - .env.development
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     networks:
       - payment-network
     healthcheck:
@@ -26,11 +25,8 @@ services:
       retries: 3
       start_period: 10s
     volumes:
-      # Development: live reload için source mount (opsiyonel)
-      # - ./:/app:ro
       - app_logs:/app/logs
 
-  # Database Service (existing - enhanced)
   db:
     image: postgres:15
     container_name: payment-db
@@ -44,7 +40,7 @@ services:
       - "5432:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
-      - ./migrations:/docker-entrypoint-initdb.d:ro
+      # ./migrations bind mount'ını SİLDİK
     networks:
       - payment-network
     healthcheck:
@@ -54,7 +50,6 @@ services:
       retries: 3
       start_period: 30s
 
-  # Redis Cache Service
   redis:
     image: redis:7-alpine
     container_name: payment-redis
@@ -73,7 +68,6 @@ services:
       retries: 3
       start_period: 10s
 
-  # PgAdmin Service (existing - enhanced)
   pgadmin:
     image: dpage/pgadmin4
     container_name: payment-pgadmin
@@ -89,9 +83,9 @@ services:
     networks:
       - payment-network
     depends_on:
-      - db
+      db:
+        condition: service_healthy
 
-  # Redis Commander (Redis GUI)
   redis-commander:
     image: rediscommander/redis-commander:latest
     container_name: payment-redis-commander
@@ -103,15 +97,14 @@ services:
     networks:
       - payment-network
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
 
-# Networks
 networks:
   payment-network:
     driver: bridge
     name: payment-network
 
-# Volumes
 volumes:
   db_data:
     name: payment_db_data
