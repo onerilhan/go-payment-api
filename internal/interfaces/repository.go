@@ -1,7 +1,11 @@
 // internal/interfaces/repository.go
 package interfaces
 
-import "github.com/onerilhan/go-payment-api/internal/models"
+import (
+	"time"
+
+	"github.com/onerilhan/go-payment-api/internal/models"
+)
 
 // UserRepositoryInterface kullanıcı database işlemleri için interface
 type UserRepositoryInterface interface {
@@ -61,6 +65,9 @@ type BalanceRepositoryInterface interface {
 
 	// CreateBalanceSnapshot belirli bir anda bakiye snapshot'ı oluşturur
 	CreateBalanceSnapshot(userID int, amount float64, reason string) error
+
+	// Belirli bir zamandaki bakiyeyi getirir.
+	GetBalanceAtTime(userID int, atTime time.Time) (*models.BalanceAtTime, error)
 }
 
 // AuditRepositoryInterface audit log database işlemleri için interface

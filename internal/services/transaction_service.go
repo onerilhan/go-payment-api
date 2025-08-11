@@ -5,19 +5,22 @@ import (
 	"fmt"
 
 	"github.com/onerilhan/go-payment-api/internal/db"
+	"github.com/onerilhan/go-payment-api/internal/interfaces"
 	"github.com/onerilhan/go-payment-api/internal/models"
-	"github.com/onerilhan/go-payment-api/internal/repository"
 )
 
 // TransactionService transaction business logic'i
 type TransactionService struct {
-	transactionRepo *repository.TransactionRepository
-	balanceService  *BalanceService
+	transactionRepo interfaces.TransactionRepositoryInterface
+	balanceService  interfaces.BalanceServiceInterface // DİKKAT: ARTIK BU DA ARAYÜZ
 	database        *sql.DB
 }
 
-// NewTransactionService yeni service oluşturur
-func NewTransactionService(transactionRepo *repository.TransactionRepository, balanceService *BalanceService, database *sql.DB) *TransactionService {
+// NewTransactionService, arayüzleri kabul eder ve *pointer döner
+// Bu, hem 'lock' uyarısını engeller hem de main.go'daki hatayı çözer.
+func NewTransactionService(transactionRepo interfaces.TransactionRepositoryInterface,
+	balanceService interfaces.BalanceServiceInterface, // Bu da arayüz
+	database *sql.DB) *TransactionService {
 	return &TransactionService{
 		transactionRepo: transactionRepo,
 		balanceService:  balanceService,

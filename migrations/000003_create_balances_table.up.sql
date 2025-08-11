@@ -21,4 +21,4 @@ CREATE TRIGGER update_balance_timestamp
     FOR EACH ROW
     EXECUTE FUNCTION update_balance_timestamp();
 
-CREATE INDEX IF NOT EXISTS idx_balances_last_updated ON balances(last_updated_at)
+CREATE INDEX IF NOT EXISTS idx_balances_last_updated ON balances(last_updated_at);

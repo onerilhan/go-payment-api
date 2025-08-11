@@ -6,17 +6,17 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/onerilhan/go-payment-api/internal/auth"
+	"github.com/onerilhan/go-payment-api/internal/interfaces"
 	"github.com/onerilhan/go-payment-api/internal/models"
-	"github.com/onerilhan/go-payment-api/internal/repository"
 )
 
 // UserService kullanıcı business logic'i
 type UserService struct {
-	userRepo *repository.UserRepository
+	userRepo interfaces.UserRepositoryInterface // ← interface kullan
 }
 
 // NewUserService yeni service oluşturur
-func NewUserService(userRepo *repository.UserRepository) *UserService {
+func NewUserService(userRepo interfaces.UserRepositoryInterface) *UserService {
 	return &UserService{userRepo: userRepo}
 }
 

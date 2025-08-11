@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/onerilhan/go-payment-api/internal/interfaces"
 	"github.com/onerilhan/go-payment-api/internal/models"
 )
 
@@ -14,8 +15,21 @@ type BalanceRepository struct {
 }
 
 // NewBalanceRepository yeni repository oluşturur
-func NewBalanceRepository(db *sql.DB) *BalanceRepository {
+func NewBalanceRepository(db *sql.DB) interfaces.BalanceRepositoryInterface {
 	return &BalanceRepository{db: db}
+}
+
+func (r *BalanceRepository) CreateBalanceSnapshot(userID int, amount float64, reason string) error {
+	query := `
+		INSERT INTO balance_history (user_id, amount, reason)
+		VALUES ($1, $2, $3)
+	`
+	_, err := r.db.Exec(query, userID, amount, reason)
+	if err != nil {
+		return fmt.Errorf("bakiye anlık görüntüsü oluşturulamadı: %w", err)
+	}
+
+	return nil
 }
 
 // GetByUserID kullanıcının bakiyesini getirir

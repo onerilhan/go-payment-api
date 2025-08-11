@@ -5,46 +5,51 @@ import (
 	"sync"
 	"time"
 
+	"github.com/onerilhan/go-payment-api/internal/interfaces"
 	"github.com/onerilhan/go-payment-api/internal/models"
-	"github.com/onerilhan/go-payment-api/internal/repository"
 )
 
-// BalanceService thread-safe balance operations
+// BalanceService, bakiye işlemlerini thread-safe (aynı anda birden fazla işlem için güvenli) bir şekilde yönetir.
 type BalanceService struct {
-	balanceRepo *repository.BalanceRepository
+	balanceRepo interfaces.BalanceRepositoryInterface
 	mutex       sync.RWMutex // Thread-safe operations için
 }
 
-// NewBalanceService yeni service oluşturur
-func NewBalanceService(balanceRepo *repository.BalanceRepository) *BalanceService {
+// NewBalanceService, yeni bir service oluşturur.
+func NewBalanceService(balanceRepo interfaces.BalanceRepositoryInterface) *BalanceService {
 	return &BalanceService{
 		balanceRepo: balanceRepo,
-		mutex:       sync.RWMutex{},
 	}
 }
 
-// GetBalance thread-safe balance okuma
-func (s *BalanceService) GetBalance(userID int) (*models.Balance, error) {
-	s.mutex.RLock()         // Read lock
-	defer s.mutex.RUnlock() // Release when done
+var _ interfaces.BalanceServiceInterface = (*BalanceService)(nil)
 
-	return s.balanceRepo.GetByUserID(userID)
+// GetBalance, kullanıcının mevcut bakiyesini getirir.
+func (s *BalanceService) GetBalance(userID int) (*models.Balance, error) {
+	s.mutex.RLock() // Okuma kilidi
+	defer s.mutex.RUnlock()
+
+	balance, err := s.balanceRepo.GetByUserID(userID)
+	if err != nil {
+		return nil, fmt.Errorf("bakiye alınamadı: %w", err)
+	}
+	return balance, nil
 }
 
-// UpdateBalance thread-safe balance güncelleme
+// UpdateBalance, kullanıcının bakiyesini günceller.
 func (s *BalanceService) UpdateBalance(userID int, amount float64) error {
-	s.mutex.Lock()         // Write lock
-	defer s.mutex.Unlock() // Release when done
+	s.mutex.Lock() // Yazma kilidi
+	defer s.mutex.Unlock()
 
 	return s.balanceRepo.UpdateBalance(userID, amount)
 }
 
-// GetBalanceHistory kullanıcının bakiye geçmişini getirir
+// GetBalanceHistory, kullanıcının bakiye geçmişini listeler.
 func (s *BalanceService) GetBalanceHistory(userID int, limit, offset int) ([]*models.BalanceHistory, error) {
-	s.mutex.RLock()         // Read lock
-	defer s.mutex.RUnlock() // Release when done
+	s.mutex.RLock() // Okuma kilidi
+	defer s.mutex.RUnlock()
 
-	// Pagination validation
+	// Pagination validasyonu
 	if limit <= 0 || limit > 100 {
 		limit = 10 // default limit
 	}
@@ -52,31 +57,39 @@ func (s *BalanceService) GetBalanceHistory(userID int, limit, offset int) ([]*mo
 		offset = 0 // default offset
 	}
 
-	// Repository'den bakiye geçmişini al
 	history, err := s.balanceRepo.GetBalanceHistory(userID, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("bakiye geçmişi alınamadı: %w", err)
 	}
-
 	return history, nil
 }
 
-// GetBalanceAtTime belirli bir tarihte kullanıcının bakiyesini hesaplar
+// GetBalanceAtTime, belirli bir tarihte kullanıcının bakiyesini hesaplar.
 func (s *BalanceService) GetBalanceAtTime(userID int, targetTime string) (*models.BalanceAtTime, error) {
-	s.mutex.RLock()         // Read lock
-	defer s.mutex.RUnlock() // Release when done
+	s.mutex.RLock() // Okuma kilidi
+	defer s.mutex.RUnlock()
 
-	// Tarih formatını parse et (ISO 8601: 2025-07-28T15:30:00Z)
+	// Tarih formatını parse et (ISO 8601)
 	parsedTime, err := time.Parse("2006-01-02T15:04:05Z", targetTime)
 	if err != nil {
 		return nil, fmt.Errorf("geçersiz tarih formatı. Format: 2006-01-02T15:04:05Z")
 	}
 
-	// Repository'den o tarihteki bakiyeyi hesapla
 	balance, err := s.balanceRepo.GetBalanceAtTime(userID, parsedTime)
 	if err != nil {
 		return nil, fmt.Errorf("belirli tarihteki bakiye hesaplanamadı: %w", err)
 	}
-
 	return balance, nil
+}
+
+// CreateBalanceSnapshot, bir bakiye anlık görüntüsü oluşturur.
+func (s *BalanceService) CreateBalanceSnapshot(userID int, amount float64, reason string) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	err := s.balanceRepo.CreateBalanceSnapshot(userID, amount, reason)
+	if err != nil {
+		return fmt.Errorf("servis katmanında bakiye anlık görüntüsü oluşturulamadı: %w", err)
+	}
+	return nil
 }
